@@ -1,0 +1,11 @@
+name: superconf
+version: 0.1.0
+
+authors:
+  - Davor Ocelic <docelic@crystallabs.io>
+
+crystal: ">= 1.0.0"
+
+license: AGPLv3
+
+# Pure standard library — no dependencies.
