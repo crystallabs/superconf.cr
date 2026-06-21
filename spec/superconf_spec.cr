@@ -217,6 +217,31 @@ describe Superconf do
     end
   end
 
+  describe "set_default" do
+    it "changes the default yet stays overridable by higher precedence" do
+      Superconf.register "sd1.n", 1
+      Superconf.set_default "sd1.n", 5
+      Superconf.get("sd1.n", Int32).should eq 5
+      Superconf["sd1.n"].source.should eq Superconf::Source::Default
+      Superconf["sd1.n"].set_from_string "9", Superconf::Source::Env, "env"
+      Superconf.get("sd1.n", Int32).should eq 9
+    end
+
+    it "updates the recorded default" do
+      o = Superconf.register "sd2.n", 1
+      Superconf.set_default "sd2.n", 7
+      o.default.should eq 7
+    end
+
+    it "does not clobber an already-set higher-precedence value" do
+      o = Superconf.register "sd3.n", 1
+      o.set 100, Superconf::Source::CommandLine, "cli"
+      Superconf.set_default "sd3.n", 5
+      o.value.should eq 100 # the CLI override stands
+      o.default.should eq 5 # but the recorded default changed
+    end
+  end
+
   describe "default config path" do
     it "uses XDG_CONFIG_HOME when set" do
       saved = ENV["XDG_CONFIG_HOME"]?

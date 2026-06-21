@@ -98,6 +98,12 @@ module Superconf
     getter default : T
     getter value : T
 
+    # Change the recorded default (used by `Superconf.set_default`). Does not by
+    # itself change the effective `value`; the caller also `set`s at `Default`
+    # precedence so config/env/CLI/runtime still win.
+    def default=(@default : T)
+    end
+
     def initialize(key : String, @default : T, *, explicit_env : String?, cli : String,
                    group : String, description : String,
                    @parse : Proc(String, T)? = nil,

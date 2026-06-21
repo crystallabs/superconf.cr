@@ -86,7 +86,7 @@ module Superconf
   #   option "myapp.refresh", 1.second, description: "Refresh interval"
   # end
   #
-  # Superconf.myapp_refresh        # => Time::Span (typed)
+  # Superconf.myapp_refresh # => Time::Span (typed)
   # Superconf.myapp_refresh = 5.seconds
   # ```
   #
@@ -128,6 +128,23 @@ module Superconf
   # type mismatch. Prefer `Superconf.<name> = ...` in normal code.
   def self.set(key : String, value : T, source : Source = Source::Runtime, origin : String = "API") : Nil forall T
     typed(key, T).set(value, source, origin)
+  end
+
+  # Change the *default* of an already-registered option. Unlike `set` (which
+  # writes at `Source::Runtime` and thus wins over everything), this writes at
+  # `Source::Default` precedence, so a config file / env var / CLI flag / runtime
+  # assignment still overrides it. Use it when an application wants a different
+  # baseline than a library's registered default — e.g. crysterm choosing a
+  # different `tput.read_timeout` — while keeping it user-overridable.
+  #
+  # It also updates the recorded default (so dumps and `default_string` are
+  # consistent). If a higher-precedence source has *already* set the value, the
+  # effective value is left untouched (the override stands); only the recorded
+  # default changes. Call it early (before `configure!`/`load_*`).
+  def self.set_default(key : String, value : T) : Nil forall T
+    opt = typed(key, T)
+    opt.default = value
+    opt.set value, Source::Default, "default (set by app)"
   end
 
   # The typed option, or a clear error on unknown key / type mismatch.
