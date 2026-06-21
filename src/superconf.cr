@@ -39,7 +39,7 @@ module Superconf
   # `env_prefix` + the upper-cased key. Computed lazily so a prefix set after
   # registration still applies.
   def self.env_name(opt : AbstractOption) : String
-    opt.explicit_env || (@@env_prefix + opt.key.gsub(/[.\-]/, "_").upcase)
+    opt.explicit_env || (@@env_prefix + opt.key.tr(".-", "__").upcase)
   end
 
   # Register a new option and return a typed handle whose `#value` you can read
@@ -160,7 +160,7 @@ module Superconf
   end
 
   private def self.derive_cli(key : String) : String
-    "--" + key.gsub(/[._]/, "-")
+    "--" + key.tr("._", "--")
   end
 
   private def self.derive_group(key : String) : String
