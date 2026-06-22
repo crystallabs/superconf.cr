@@ -13,6 +13,10 @@ end
 module Superconf
   option "app.threads", 4, description: "app-defined option"
   option "regtest.eager", 123, description: "eager-registration regression"
+
+  # A library option the app promotes under its own typed name.
+  option "lib.resize_interval", 0.2.seconds, description: "library option"
+  option_alias "myapp.refresh", "lib.resize_interval", Time::Span
 end
 
 describe Superconf do
@@ -239,6 +243,116 @@ describe Superconf do
       Superconf.set_default "sd3.n", 5
       o.value.should eq 100 # the CLI override stands
       o.default.should eq 5 # but the recorded default changed
+    end
+  end
+
+  describe "aliasing" do
+    it "shares one value between the two names, either way" do
+      Superconf.register "al1.n", 1
+      a = Superconf.register_alias "al1.promoted", "al1.n"
+      a.alias_target.not_nil!.key.should eq "al1.n"
+
+      Superconf.set "al1.promoted", 7 # write via alias
+      Superconf.get("al1.n", Int32).should eq 7
+      Superconf.get("al1.promoted", Int32).should eq 7
+
+      Superconf.set "al1.n", 9 # write via target
+      Superconf.get("al1.promoted", Int32).should eq 9
+    end
+
+    it "derives its own env/CLI/group surfaces" do
+      Superconf.register "al2.n", 0
+      a = Superconf.register_alias "myapp.count", "al2.n"
+      Superconf.env_name(a).should eq "MYAPP_COUNT"
+      a.cli.should eq "--myapp-count"
+      a.group.should eq "myapp"
+    end
+
+    it "loads an env var through the alias at Env precedence" do
+      Superconf.register "al3.n", 0
+      Superconf.register_alias "al3.alt", "al3.n"
+      ENV["AL3_ALT"] = "42"
+      Superconf.load_env
+      Superconf.get("al3.n", Int32).should eq 42
+      Superconf["al3.n"].source.should eq Superconf::Source::Env
+    ensure
+      ENV.delete "AL3_ALT"
+    end
+
+    it "loads a CLI flag through the alias" do
+      Superconf.register "al4.name", "a"
+      Superconf.register_alias "al4.alt", "al4.name"
+      Superconf.load_args ["--al4-alt=zebra"], consume: false
+      Superconf.get("al4.name", String).should eq "zebra"
+    end
+
+    it "loads the alias key from a config file, flat and nested" do
+      Superconf.register "al9.n", 0
+      Superconf.register_alias "promo.al9", "al9.n"
+
+      Superconf.load_yaml "promo.al9: 11" # flat dotted key
+      Superconf.get("al9.n", Int32).should eq 11
+      Superconf["al9.n"].source.should eq Superconf::Source::ConfigFile
+
+      Superconf.load_yaml <<-YAML # nested group mapping
+        promo:
+          al9: 22
+        YAML
+      Superconf.get("al9.n", Int32).should eq 22
+    end
+
+    it "inherits the target's parsing and validation" do
+      Superconf.register "al5.n", 10, validate: ->(n : Int32) { n > 0 }
+      Superconf.register_alias "al5.alt", "al5.n"
+      expect_raises(Superconf::Error, /invalid value 0/) do
+        Superconf.set "al5.alt", 0
+      end
+    end
+
+    it "exposes typed accessors via option_alias, sharing the value" do
+      Superconf.lib_resize_interval = 1.second
+      Superconf.myapp_refresh.should eq 1.second
+      typeof(Superconf.myapp_refresh).should eq Time::Span
+      Superconf.myapp_refresh = 3.seconds
+      Superconf.lib_resize_interval.should eq 3.seconds
+    ensure
+      Superconf.lib_resize_interval = 0.2.seconds
+    end
+
+    it "registers an alias eagerly, even with the accessor unused" do
+      Superconf["myapp.refresh"]?.should_not be_nil
+    end
+
+    it "resolves a chain when aliasing an alias" do
+      Superconf.register "al6.n", 1
+      Superconf.register_alias "al6.b", "al6.n"
+      c = Superconf.register_alias "al6.c", "al6.b"
+      c.alias_target.not_nil!.key.should eq "al6.n" # collapsed to the root
+      Superconf.set "al6.c", 5
+      Superconf.get("al6.n", Int32).should eq 5
+    end
+
+    it "raises on a duplicate alias key and on an unknown target" do
+      Superconf.register "al7.n", 1
+      Superconf.register_alias "al7.alt", "al7.n"
+      expect_raises(ArgumentError, /already registered/) do
+        Superconf.register_alias "al7.alt", "al7.n"
+      end
+      expect_raises(Superconf::Error, /unknown config option/) do
+        Superconf.register_alias "al7.x", "al7.nope"
+      end
+    end
+
+    it "omits aliases from value dumps but lists them in report" do
+      Superconf.register "al8.n", 5
+      Superconf.register_alias "al8.alt", "al8.n"
+      YAML.parse(Superconf.to_yaml)["al8"]["alt"]?.should be_nil
+      YAML.parse(Superconf.to_yaml)["al8"]["n"].as_i.should eq 5
+
+      report = JSON.parse(String.build { |s| Superconf.dump s, Superconf::Format::Report })
+      entry = report.as_a.find { |e| e["key"] == "al8.alt" }.not_nil!
+      entry["alias_of"].as_s.should eq "al8.n"
+      entry["value"].as_i.should eq 5
     end
   end
 

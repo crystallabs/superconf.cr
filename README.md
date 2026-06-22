@@ -51,6 +51,37 @@ any `Enum` (including `@[Flags]`). For other types pass a `parse:` proc. Add a
 runtime). `get(key, T)` / `set(key, v)` are the dynamic, string-keyed API used
 by the loaders.
 
+## Overriding and aliasing lower-level options
+
+A library registers an option; the app on top can adjust it without touching the
+library. Two ways:
+
+* **`set_default key, value`** — change the *baseline* while keeping it
+  overridable (a config file / env var / CLI flag / runtime assignment still
+  wins). Use it when the app wants a different default than the library's.
+
+* **`register_alias alias_key, target_key`** (or the typed `option_alias` macro)
+  — *promote* an option under a second name. The alias shares the one value,
+  type, default, parsing and validation, but gains its own config key, env var
+  and CLI flag. Reading or writing either name affects the same value.
+
+```crystal
+module Superconf
+  option "screen.resize_interval", 0.2.seconds   # declared by a library
+
+  # The app considers this important enough to surface under its own name:
+  option_alias "myapp.refresh", "screen.resize_interval", Time::Span
+end
+
+Superconf.myapp_refresh = 1.second                # writes the shared value
+Superconf.screen_resize_interval                  # => 1.second
+# MYAPP_REFRESH / --myapp-refresh / `myapp.refresh:` now work too
+```
+
+Aliasing an alias resolves to the same underlying option. Aliases stay out of
+the re-loadable value dumps (the canonical name already carries the value) but
+appear in the `report` dump with an `alias_of` field.
+
 ## Dumping
 
 `Superconf.dump(io, format)` (or `--dump-config[ FORMAT]` once `configure!` /

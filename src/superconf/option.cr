@@ -82,6 +82,20 @@ module Superconf
     # Emit the current value as a native JSON value.
     abstract def emit_json(json : JSON::Builder) : Nil
 
+    # The option an *alias* forwards to, or `nil` for a normal option. An alias
+    # (see `Superconf.register_alias`) is an extra name that shares another
+    # option's value, type, default, parsing and validation.
+    def alias_target : AbstractOption?
+      nil
+    end
+
+    # Build an alias of this option, registered under *key* with its own
+    # env/CLI/group surfaces but sharing this option's value. Used by
+    # `Superconf.register_alias`.
+    abstract def build_alias(key : String, *, explicit_env : String?,
+                             cli : String, group : String,
+                             description : String) : AbstractOption
+
     # Key with its leading `<group>.` stripped, for grouped dumps. A key
     # without a dot is returned unchanged.
     def leaf_key : String
@@ -179,6 +193,12 @@ module Superconf
       {% end %}
     end
 
+    def build_alias(key : String, *, explicit_env : String?, cli : String,
+                    group : String, description : String) : AbstractOption
+      Alias(T).new(key, self, explicit_env: explicit_env, cli: cli,
+        group: group, description: description)
+    end
+
     # ---- type <-> string conversions -------------------------------------
 
     # Parse a string into `T`. A `parse:` proc, if given, takes precedence;
@@ -232,6 +252,81 @@ module Superconf
     # numbers (so `1.second` dumps as `1`, not `1.0`).
     private def normalize(seconds : Float64)
       seconds == seconds.to_i64 ? seconds.to_i64 : seconds
+    end
+  end
+
+  # An *alias*: a second name for an already-registered option, sharing its one
+  # value, type, default, parsing and validation. It carries its own config key,
+  # environment variable and CLI flag, but every read and write forwards to the
+  # target option, so the two names are always in sync.
+  #
+  # Created by `Superconf.register_alias` / `Superconf.option_alias` when an app
+  # wants to *promote* a lower-level (library) option under its own name. The
+  # target is always a concrete `Option(T)`: aliases of aliases collapse to the
+  # underlying option (see `Superconf.register_alias`), so there is never a chain
+  # to walk at read time.
+  class Alias(T) < AbstractOption
+    # The option this alias forwards to.
+    getter target : Option(T)
+
+    def initialize(key : String, @target : Option(T), *, explicit_env : String?,
+                   cli : String, group : String, description : String)
+      super(key, explicit_env, cli, group, description)
+    end
+
+    def alias_target : AbstractOption
+      @target
+    end
+
+    # The shared value, read straight from the target.
+    def value : T
+      @target.value
+    end
+
+    # Assign through to the target option (same precedence rules apply).
+    def set(value : T, source : Source = Source::Runtime, origin : String = "API") : Nil
+      @target.set value, source, origin
+    end
+
+    # `source`/`origin` mirror the target's, so a dump shows where the shared
+    # value actually came from regardless of which name set it.
+    def source : Source
+      @target.source
+    end
+
+    def origin : String
+      @target.origin
+    end
+
+    def stringify : String
+      @target.stringify
+    end
+
+    def default_string : String
+      @target.default_string
+    end
+
+    def set_from_string(str : String, source : Source, origin : String) : Nil
+      @target.set_from_string str, source, origin
+    end
+
+    def bool? : Bool
+      @target.bool?
+    end
+
+    def emit_yaml(yaml : YAML::Builder) : Nil
+      @target.emit_yaml yaml
+    end
+
+    def emit_json(json : JSON::Builder) : Nil
+      @target.emit_json json
+    end
+
+    # Aliasing an alias targets the same underlying option, never this wrapper.
+    def build_alias(key : String, *, explicit_env : String?, cli : String,
+                    group : String, description : String) : AbstractOption
+      @target.build_alias key, explicit_env: explicit_env, cli: cli,
+        group: group, description: description
     end
   end
 end

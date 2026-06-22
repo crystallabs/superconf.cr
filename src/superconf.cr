@@ -147,11 +147,98 @@ module Superconf
     opt.set value, Source::Default, "default (set by app)"
   end
 
-  # The typed option, or a clear error on unknown key / type mismatch.
+  # Register an *alias*: a second name (*alias_key*) for an already-registered
+  # option (*target_key*). The alias shares the target's value, type, default,
+  # parsing and validation, and gets its own config key, env var and CLI flag
+  # (derived from *alias_key* unless overridden). Reading or writing either name
+  # affects the one shared value — through `get`/`set`, the typed accessor, a
+  # config file, an env var or a CLI flag.
+  #
+  # Use it, like `set_default`, when an option declared by a lower level (a
+  # library) is important enough that the application wants to *promote* it under
+  # its own name. The library's name keeps working; the app's name becomes an
+  # equal surface beside it:
+  #
+  # ```
+  # module Superconf
+  #   option "screen.resize_interval", 0.2.seconds # declared by a library
+  # end
+  #
+  # Superconf.register_alias "myapp.refresh", "screen.resize_interval"
+  # Superconf.set "myapp.refresh", 1.second          # writes the shared value
+  # Superconf.get("screen.resize_interval", Time::Span) # => 1.second
+  # # MYAPP_REFRESH / --myapp-refresh / `myapp.refresh:` now work too
+  # ```
+  #
+  # Aliasing an alias is allowed and resolves to the same underlying option.
+  # Registering an *alias_key* that already exists raises; an unknown
+  # *target_key* raises. Call it early (before `configure!`/`load_*`). Returns
+  # the alias handle.
+  def self.register_alias(alias_key : String, target_key : String, *,
+                          env : String? = nil, cli : String? = nil,
+                          group : String? = nil, description : String? = nil) : AbstractOption
+    raise ArgumentError.new("Config option already registered: #{alias_key.inspect}") if @@options.has_key?(alias_key)
+    root = resolve self[target_key]
+    a = root.build_alias(
+      alias_key,
+      explicit_env: env,
+      cli: cli || derive_cli(alias_key),
+      group: group || derive_group(alias_key),
+      description: description || root.description,
+    )
+    @@options[alias_key] = a
+    a
+  end
+
+  # Declare a *typed alias* of *target*: registers an alias named *key* (see
+  # `register_alias`) and defines the typed accessors `Superconf.<name>` /
+  # `Superconf.<name>=` of value type *type*, where `<name>` is *key* with dots
+  # turned into underscores. This is the alias counterpart of `option` — the
+  # ergonomic, typed way for an app to promote a lower-level option:
+  #
+  # ```
+  # module Superconf
+  #   option_alias "myapp.refresh", "screen.resize_interval", Time::Span
+  # end
+  #
+  # Superconf.myapp_refresh = 1.second # writes the shared value
+  # Superconf.myapp_refresh            # => Time::Span
+  # ```
+  #
+  # *type* is the target option's value type. The target must already be
+  # registered when this runs (declare the library's `option` first).
+  macro option_alias(key, target, type, *, description = nil, env = nil, cli = nil, group = nil)
+    {% name = key.split(".").join("_").id %}
+    {% const = ("OPT_" + key.split(".").join("_")).id %}
+    {{const}} = register_alias({{key}}, {{target}}, env: {{env}}, cli: {{cli}}, group: {{group}}, description: {{description}})
+    # Force eager registration (see the `option` macro for why).
+    {{const}}
+
+    # Typed reader of the shared value.
+    def self.{{name}} : {{type}}
+      get({{key}}, {{type}})
+    end
+
+    # Typed writer at `Source::Runtime` of the shared value.
+    def self.{{name}}=(value : {{type}})
+      set({{key}}, value)
+    end
+  end
+
+  # The typed option, or a clear error on unknown key / type mismatch. Resolves
+  # aliases to the underlying option, so `get`/`set` work through either name.
   private def self.typed(key : String, type : T.class) : Option(T) forall T
-    opt = self[key]
+    opt = resolve self[key]
     opt.as?(Option(T)) ||
       raise Error.new("config option #{key.inspect} is #{opt.class}, not Option(#{T})")
+  end
+
+  # Follow an alias chain to the underlying (non-alias) option.
+  private def self.resolve(opt : AbstractOption) : AbstractOption
+    while t = opt.alias_target
+      opt = t
+    end
+    opt
   end
 
   # Iterate every option, ordered by key.
@@ -324,7 +411,7 @@ module Superconf
 
   # Emit a sourceable shell script: one `export <ENV>='value'` per option.
   private def self.dump_env(io : IO) : Nil
-    sorted.each do |o|
+    canonical.each do |o|
       io << "export " << env_name(o) << '=' << shell_quote(o.stringify) << '\n'
     end
   end
@@ -339,10 +426,17 @@ module Superconf
     @@options.values.sort_by!(&.key)
   end
 
+  # Options that own their value (aliases excluded), for the value-listing dumps
+  # where emitting the same value under two keys would be redundant. The full
+  # set, aliases included, still appears in the `report` dump.
+  private def self.canonical : Array(AbstractOption)
+    sorted.reject(&.alias_target)
+  end
+
   # Options split into [top-level (no dot)] and [{group => options}] for the
   # grouped YAML/JSON dumps.
   private def self.grouped_options
-    o = sorted
+    o = canonical
     {o.reject(&.key.includes?('.')), o.select(&.key.includes?('.')).group_by(&.group)}
   end
 
@@ -386,7 +480,7 @@ module Superconf
   end
 
   private def self.dump_pretty(io : IO) : Nil
-    opts = sorted
+    opts = canonical
     return if opts.empty?
     kw = {opts.max_of(&.key.size), "OPTION".size}.max
     vw = {opts.max_of(&.stringify.size), "VALUE".size}.max
@@ -411,6 +505,9 @@ module Superconf
             j.field "env", env_name(o)
             j.field "cli", o.cli
             j.field "description", o.description
+            if t = o.alias_target
+              j.field "alias_of", t.key
+            end
           end
         end
       end
