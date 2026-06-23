@@ -165,7 +165,7 @@ module Superconf
   # end
   #
   # Superconf.register_alias "myapp.refresh", "screen.resize_interval"
-  # Superconf.set "myapp.refresh", 1.second          # writes the shared value
+  # Superconf.set "myapp.refresh", 1.second             # writes the shared value
   # Superconf.get("screen.resize_interval", Time::Span) # => 1.second
   # # MYAPP_REFRESH / --myapp-refresh / `myapp.refresh:` now work too
   # ```
