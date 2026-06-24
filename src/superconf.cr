@@ -214,14 +214,16 @@ module Superconf
     # Force eager registration (see the `option` macro for why).
     {{const}}
 
-    # Typed reader of the shared value.
+    # Typed reader of the shared value. Reads the cached alias handle directly
+    # (no hash lookup), just like `option` — the `.as` is a cheap static
+    # downcast, since `register_alias` always yields an `Alias(T)`.
     def self.{{name}} : {{type}}
-      get({{key}}, {{type}})
+      {{const}}.as(Alias({{type}})).value
     end
 
     # Typed writer at `Source::Runtime` of the shared value.
     def self.{{name}}=(value : {{type}})
-      set({{key}}, value)
+      {{const}}.as(Alias({{type}})).set(value)
     end
   end
 
