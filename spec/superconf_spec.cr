@@ -350,7 +350,7 @@ describe Superconf do
       YAML.parse(Superconf.to_yaml)["al8"]["n"].as_i.should eq 5
 
       report = JSON.parse(String.build { |s| Superconf.dump s, Superconf::Format::Report })
-      entry = report.as_a.find { |e| e["key"] == "al8.alt" }.not_nil!
+      entry = report.as_a.find! { |e| e["key"] == "al8.alt" }
       entry["alias_of"].as_s.should eq "al8.n"
       entry["value"].as_i.should eq 5
     end

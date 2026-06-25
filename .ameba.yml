@@ -1,0 +1,15 @@
+# Ameba configuration for superconf.
+# Run with `./bin/ameba` (or `bin/ameba --fix` to autocorrect).
+
+# Single-letter block parameters (`s`, `o`, `f`, `g`, `e`) are idiomatic Crystal
+# and mirror the standard library's own style (`String.build { |s| ... }`,
+# `each { |o| ... }`). We keep them, so this naming rule is disabled.
+Naming/BlockParameterName:
+  Enabled: false
+
+# `not_nil!` in spec code is acceptable: when an expected value is unexpectedly
+# nil the assertion fails with a clear location anyway. Keep the lint on for
+# `src/` (production code), but allow it in the test suite.
+Lint/NotNil:
+  Excluded:
+    - spec/**/*.cr
