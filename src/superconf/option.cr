@@ -247,11 +247,14 @@ module Superconf
         str.strip.to_f.seconds
       {% elsif T < Enum %}
         {% if T.annotation(Flags) %}
+          # Reject input with no recognizable flag (empty, or only separators /
+          # whitespace): like every other built-in type, garbage must raise
+          # rather than silently collapse — here to `None`. An explicit `None`
+          # is still accepted, since it is a real, non-empty token that parses.
+          parts = str.split(/[,|]/).map(&.strip).reject(&.empty?)
+          raise ArgumentError.new("expected one or more flags (comma- or pipe-separated)") if parts.empty?
           r = T::None
-          str.split(/[,|]/).each do |part|
-            part = part.strip
-            r |= T.parse(part) unless part.empty?
-          end
+          parts.each { |part| r |= T.parse(part) }
           r
         {% else %}
           T.parse str.strip

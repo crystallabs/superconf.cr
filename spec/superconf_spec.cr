@@ -105,6 +105,16 @@ describe Superconf do
       v.b?.should be_true
     end
 
+    it "rejects an empty flags string instead of silently yielding None" do
+      Superconf.register "t5c.opt", SCFlags::A
+      expect_raises(Superconf::Error, /cannot parse ""/) do
+        Superconf["t5c.opt"].set_from_string "", Superconf::Source::Env, "e"
+      end
+      # An explicit `None` is still a valid, non-empty token.
+      Superconf["t5c.opt"].set_from_string "None", Superconf::Source::Env, "e"
+      Superconf.get("t5c.opt", SCFlags).none?.should be_true
+    end
+
     it "rejects an unrecognized boolean string" do
       Superconf.register "t5b.flag", false
       expect_raises(Superconf::Error, /cannot parse "ture"/) do
