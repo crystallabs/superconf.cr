@@ -105,10 +105,24 @@ describe Superconf do
       v.b?.should be_true
     end
 
+    it "rejects an unrecognized boolean string" do
+      Superconf.register "t5b.flag", false
+      expect_raises(Superconf::Error, /cannot parse "ture"/) do
+        Superconf["t5b.flag"].set_from_string "ture", Superconf::Source::Env, "e"
+      end
+    end
+
     it "parses a Char option (single character)" do
       Superconf.register "t14.glyph", '▮'
       Superconf["t14.glyph"].set_from_string "x", Superconf::Source::Env, "e"
       Superconf.get("t14.glyph", Char).should eq 'x'
+    end
+
+    it "rejects a multi-character string for a Char option" do
+      Superconf.register "t14b.glyph", '▮'
+      expect_raises(Superconf::Error, /cannot parse "abc"/) do
+        Superconf["t14b.glyph"].set_from_string "abc", Superconf::Source::Env, "e"
+      end
     end
 
     it "uses a custom parse proc when provided" do
@@ -137,6 +151,16 @@ describe Superconf do
       expect_raises(Superconf::Error, /default value -1 fails validation/) do
         Superconf.register "v4.n", -1, validate: ->(n : Int32) { n > 0 }
       end
+    end
+
+    it "rejects an invalid new default even when outranked by a higher source" do
+      Superconf.register "v5.n", 10, validate: ->(n : Int32) { n > 0 }
+      Superconf.set "v5.n", 5 # Runtime outranks the Default set inside set_default
+      expect_raises(Superconf::Error, /default value -1 fails validation/) do
+        Superconf.set_default "v5.n", -1
+      end
+      Superconf.get("v5.n", Int32).should eq 5    # effective value untouched
+      Superconf["v5.n"].default_string.should eq "10" # invalid default not recorded
     end
   end
 
@@ -213,6 +237,43 @@ describe Superconf do
       JSON.parse(Superconf.to_json)["t12"]["a"].as_i.should eq 1
     end
 
+    it "round-trips an option whose custom group differs from its key prefix" do
+      o = Superconf.register "rt2.x", 1, group: "weird"
+      o.set_from_string "5", Superconf::Source::ConfigFile, "seed"
+      yaml = Superconf.to_yaml
+      # Nested under the key prefix, not the custom group name — so it re-loads.
+      YAML.parse(yaml)["rt2"]["x"].as_i.should eq 5
+      YAML.parse(yaml)["weird"]?.should be_nil
+
+      # Reloading the dump must land back on the same key (rt2.x), restoring 5.
+      o.set_from_string "1", Superconf::Source::ConfigFile, "reset"
+      o.value.should eq 1
+      Superconf.load_yaml yaml
+      o.value.should eq 5
+    end
+
+    it "round-trips a top-level key that collides with a group name" do
+      flag = Superconf.register "rt3", false # top-level scalar
+      lvl = Superconf.register "rt3.level", 0 # group sharing that name
+      flag.set_from_string "true", Superconf::Source::ConfigFile, "seed"
+      lvl.set_from_string "7", Superconf::Source::ConfigFile, "seed"
+
+      # Both must survive the dump as distinct keys (no duplicate "rt3" mapping
+      # key clobbering the scalar), in YAML and JSON alike.
+      y = YAML.parse(Superconf.to_yaml)
+      y["rt3"].as_bool.should be_true
+      y["rt3.level"].as_i.should eq 7
+      JSON.parse(Superconf.to_json)["rt3"].as_bool.should be_true
+
+      # And both re-load back onto their own keys.
+      yaml = Superconf.to_yaml
+      flag.set_from_string "false", Superconf::Source::ConfigFile, "reset"
+      lvl.set_from_string "0", Superconf::Source::ConfigFile, "reset"
+      Superconf.load_yaml yaml
+      flag.value.should be_true
+      lvl.value.should eq 7
+    end
+
     it "emits a sourceable env script, shell-quoting values" do
       Superconf.register "t15.name", "a b"
       io = IO::Memory.new
@@ -235,6 +296,15 @@ describe Superconf do
       o = Superconf.register "sd2.n", 1
       Superconf.set_default "sd2.n", 7
       o.default.should eq 7
+    end
+
+    it "rejects an invalid new default without corrupting the recorded one" do
+      o = Superconf.register "sd4.n", 10, validate: ->(n : Int32) { n > 0 }
+      expect_raises(Superconf::Error, /invalid value -5/) do
+        Superconf.set_default "sd4.n", -5
+      end
+      o.default.should eq 10 # unchanged by the rejected call
+      o.value.should eq 10
     end
 
     it "does not clobber an already-set higher-precedence value" do
@@ -371,6 +441,18 @@ describe Superconf do
       Superconf.default_config_path.should eq "#{Path.home}/.config/app/config.yml"
     ensure
       ENV["XDG_CONFIG_HOME"] = saved if saved
+    end
+  end
+
+  describe "iteration" do
+    it "yields every registered option ordered by key" do
+      Superconf.register "iter.zzz", 1
+      Superconf.register "iter.aaa", 1
+      keys = [] of String
+      Superconf.each { |o| keys << o.key }
+      keys.should eq keys.sort # globally ordered by key
+      keys.should contain "iter.aaa"
+      keys.should contain "iter.zzz"
     end
   end
 end

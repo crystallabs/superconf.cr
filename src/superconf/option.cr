@@ -114,8 +114,14 @@ module Superconf
 
     # Change the recorded default (used by `Superconf.set_default`). Does not by
     # itself change the effective `value`; the caller also `set`s at `Default`
-    # precedence so config/env/CLI/runtime still win.
-    def default=(@default : T)
+    # precedence so config/env/CLI/runtime still win. The new default is itself
+    # validated: `set` at `Default` precedence is skipped when a higher source
+    # already won, so without this an invalid default could be recorded behind
+    # the override and later surface (e.g. via `default_string`, or if the
+    # higher source is cleared).
+    def default=(value : T)
+      check_default value
+      @default = value
     end
 
     def initialize(key : String, @default : T, *, explicit_env : String?, cli : String,
@@ -125,8 +131,15 @@ module Superconf
       @value = @default
       super(key, explicit_env, cli, group, description)
       # Catch a bad default at declaration time, not on first use.
+      check_default @default
+    end
+
+    # Raise unless *value* passes the option's `validate` predicate (if any).
+    # Guards the recorded default so it always satisfies validation, regardless
+    # of the effective value's precedence.
+    private def check_default(value : T) : Nil
       if v = @validate
-        raise Error.new("default value #{@default.inspect} fails validation for option #{key.inspect}") unless v.call(@default)
+        raise Error.new("default value #{value.inspect} fails validation for option #{key.inspect}") unless v.call(value)
       end
     end
 
@@ -208,7 +221,17 @@ module Superconf
         return p.call(str)
       end
       {% if T == Bool %}
-        {"1", "true", "yes", "on", "y"}.includes? str.strip.downcase
+        # Recognize an explicit truthy/falsey vocabulary and reject anything
+        # else: like every other built-in type, an unparseable value (e.g. a
+        # typo'd `ture`) must raise rather than silently collapse to `false`.
+        case str.strip.downcase
+        when "1", "true", "yes", "on", "y"
+          true
+        when "0", "false", "no", "off", "n"
+          false
+        else
+          raise ArgumentError.new("expected a boolean (true/false, yes/no, on/off, 1/0)")
+        end
       {% elsif T == Int32 %}
         str.strip.to_i
       {% elsif T == Int64 %}
@@ -218,7 +241,7 @@ module Superconf
       {% elsif T == String %}
         str
       {% elsif T == Char %}
-        raise ArgumentError.new("expected a single character") if str.empty?
+        raise ArgumentError.new("expected a single character") unless str.size == 1
         str[0]
       {% elsif T == Time::Span %}
         str.strip.to_f.seconds
