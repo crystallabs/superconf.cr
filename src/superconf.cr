@@ -143,8 +143,11 @@ module Superconf
   # default changes. Call it early (before `configure!`/`load_*`).
   def self.set_default(key : String, value : T) : Nil forall T
     opt = typed(key, T)
-    opt.default = value
+    # `set` validates the value (when it isn't outranked by a higher source);
+    # record the new default only after it succeeds, so a value that fails the
+    # option's validator raises *without* leaving an invalid default behind.
     opt.set value, Source::Default, "default (set by app)"
+    opt.default = value
   end
 
   # Register an *alias*: a second name (*alias_key*) for an already-registered
@@ -245,7 +248,7 @@ module Superconf
 
   # Iterate every option, ordered by key.
   def self.each(& : AbstractOption ->) : Nil
-    @@options.values.sort_by!(&.key).each { |o| yield o }
+    sorted.each { |o| yield o }
   end
 
   private def self.derive_cli(key : String) : String
@@ -435,15 +438,20 @@ module Superconf
     sorted.reject(&.alias_target)
   end
 
-  # Options split into [top-level (no dot)] and [{group => options}] for the
-  # grouped YAML/JSON dumps.
+  # Options split into [top-level (no dot)] and [{prefix => options}] for the
+  # grouped YAML/JSON dumps. The nesting key is the *key's* first dotted segment,
+  # not the option's `group`: `leaf_key` strips that same prefix, so a dump nested
+  # this way re-loads back onto the original key. Grouping by `group` instead
+  # would silently break the round-trip whenever a custom `group:` differs from
+  # the key prefix (the reload would target `group.leaf`, not the real key).
   private def self.grouped_options
     o = canonical
-    {o.reject(&.key.includes?('.')), o.select(&.key.includes?('.')).group_by(&.group)}
+    {o.reject(&.key.includes?('.')), o.select(&.key.includes?('.')).group_by(&.key.split('.', 2).first)}
   end
 
   private def self.dump_yaml(io : IO) : Nil
     top, grouped = grouped_options
+    top_keys = top.map(&.key).to_set
     YAML.build(io) do |y|
       y.mapping do
         top.each do |o|
@@ -451,11 +459,22 @@ module Superconf
           o.emit_yaml y
         end
         grouped.each do |g, gopts|
-          y.scalar g
-          y.mapping do
+          # A group whose name equals a top-level scalar key cannot also be a
+          # nested mapping (that would emit a duplicate mapping key and lose the
+          # scalar on reload). Emit such a group's members flat instead — flat
+          # dotted keys stay distinct and `apply_any` re-loads them all the same.
+          if top_keys.includes?(g)
             gopts.each do |o|
-              y.scalar o.leaf_key
+              y.scalar o.key
               o.emit_yaml y
+            end
+          else
+            y.scalar g
+            y.mapping do
+              gopts.each do |o|
+                y.scalar o.leaf_key
+                o.emit_yaml y
+              end
             end
           end
         end
@@ -465,15 +484,22 @@ module Superconf
 
   private def self.dump_json(io : IO) : Nil
     top, grouped = grouped_options
+    top_keys = top.map(&.key).to_set
     JSON.build(io, indent: "  ") do |j|
       j.object do
         top.each do |o|
           j.field(o.key) { o.emit_json j }
         end
         grouped.each do |g, gopts|
-          j.field(g) do
-            j.object do
-              gopts.each { |o| j.field(o.leaf_key) { o.emit_json j } }
+          # See `dump_yaml`: avoid a duplicate field when a group name collides
+          # with a top-level key by emitting flat dotted keys for that group.
+          if top_keys.includes?(g)
+            gopts.each { |o| j.field(o.key) { o.emit_json j } }
+          else
+            j.field(g) do
+              j.object do
+                gopts.each { |o| j.field(o.leaf_key) { o.emit_json j } }
+              end
             end
           end
         end
