@@ -138,8 +138,16 @@ module Superconf
     # Guards the recorded default so it always satisfies validation, regardless
     # of the effective value's precedence.
     private def check_default(value : T) : Nil
+      validate!(value) { "default value #{value.inspect} fails validation for option #{key.inspect}" }
+    end
+
+    # Shared core of the default-time and assignment-time validation checks:
+    # raise an `Error` unless *value* passes the option's `validate` predicate
+    # (a no-op when none is set). The message is built by the block, evaluated
+    # lazily so the interpolation cost is paid only on an actual failure.
+    private def validate!(value : T, & : -> String) : Nil
       if v = @validate
-        raise Error.new("default value #{value.inspect} fails validation for option #{key.inspect}") unless v.call(value)
+        raise Error.new(yield) unless v.call(value)
       end
     end
 
@@ -148,9 +156,7 @@ module Superconf
     # must also pass the option's `validate` predicate, if any.
     def set(value : T, source : Source = Source::Runtime, origin : String = "API") : Nil
       return if source < @source
-      if v = @validate
-        raise Error.new("invalid value #{value.inspect} for option #{@key} (#{origin})") unless v.call(value)
-      end
+      validate!(value) { "invalid value #{value.inspect} for option #{@key} (#{origin})" }
       @value = value
       @source = source
       @origin = origin
