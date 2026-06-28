@@ -123,6 +123,28 @@ module Superconf
     opt.explicit_env || (@@env_prefix + derived_env_suffix(opt.key))
   end
 
+  # Resolve the CLI flag and (optional) explicit env name for a freshly
+  # registered option or alias keyed *key*, and run the collision guards. Shared
+  # by `register` and `register_alias` so the derive-then-guard sequence lives in
+  # one place. Returns the resolved `{cli, env}`.
+  #
+  # An *empty* explicit override is treated as no override at all (derive
+  # instead), the same way `nil` is. A blank `env:` would otherwise become the
+  # option's env-var *name* — unusable: `ENV[""]` is never set, `load_env` can
+  # never reach the option, and `dump_env` emits the invalid line
+  # `export ='value'`, breaking the env dump's round-trip. A blank `cli:`
+  # likewise yields an unusable, valueless flag (`OptionParser.on("=VALUE")`).
+  # Folding "" into the derived name keeps the surfaces working and matches the
+  # library's "present-but-empty means unset" philosophy.
+  private def self.derive_surfaces(key : String, cli : String?, env : String?) : {String, String?}
+    the_cli = cli.presence || derive_cli(key)
+    the_env = env.presence
+    ensure_cli_free the_cli
+    ensure_env_free the_env
+    ensure_derived_env_free key if the_env.nil?
+    {the_cli, the_env}
+  end
+
   # Register a new option and return a typed handle whose `#value` you can read
   # directly. The value type `T` is inferred from *default*.
   #
@@ -139,19 +161,7 @@ module Superconf
                     parse : Proc(String, T)? = nil,
                     validate : Proc(T, Bool)? = nil) : Option(T) forall T
     ensure_unregistered key
-    # An *empty* explicit override is treated as no override at all (derive
-    # instead), the same way `nil` is. A blank `env:` would otherwise become the
-    # option's env-var *name* — unusable: `ENV[""]` is never set, `load_env` can
-    # never reach the option, and `dump_env` emits the invalid line
-    # `export ='value'`, breaking the env dump's round-trip. A blank `cli:`
-    # likewise yields an unusable, valueless flag (`OptionParser.on("=VALUE")`).
-    # Folding "" into the derived name keeps the surfaces working and matches the
-    # library's "present-but-empty means unset" philosophy.
-    the_cli = cli.presence || derive_cli(key)
-    the_env = env.presence
-    ensure_cli_free the_cli
-    ensure_env_free the_env
-    ensure_derived_env_free key if the_env.nil?
+    the_cli, the_env = derive_surfaces(key, cli, env)
     opt = Option(T).new(
       key,
       default,
@@ -276,13 +286,7 @@ module Superconf
                           group : String? = nil, description : String? = nil) : AbstractOption
     ensure_unregistered alias_key
     root = resolve self[target_key]
-    # Treat an empty explicit override as no override (derive instead) — see
-    # `register` for why a blank `env:`/`cli:` would break the alias's surfaces.
-    the_cli = cli.presence || derive_cli(alias_key)
-    the_env = env.presence
-    ensure_cli_free the_cli
-    ensure_env_free the_env
-    ensure_derived_env_free alias_key if the_env.nil?
+    the_cli, the_env = derive_surfaces(alias_key, cli, env)
     a = root.build_alias(
       alias_key,
       explicit_env: the_env,
