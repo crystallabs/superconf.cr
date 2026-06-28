@@ -52,6 +52,45 @@ describe Superconf do
         Superconf.register "t3.x", false
       end
     end
+
+    it "rejects two distinct keys that derive the same CLI flag" do
+      # `.` and `_` both map to `-` in a derived CLI flag, so distinct keys can
+      # collide on one flag (here both yield `--t3b-log-level`). `load_args` keys
+      # its OptionParser handlers by flag string, so without this guard the
+      # second registration silently shadows the first on the command line (while
+      # env/config, named independently, would still set both).
+      Superconf.register "t3b.log.level", 0
+      expect_raises(ArgumentError, /CLI flag .* already used/) do
+        Superconf.register "t3b.log_level", 0
+      end
+    end
+
+    it "rejects two options claiming the same explicit env var" do
+      # Two options sharing one environment variable can't be set independently
+      # (`load_env` reads the single var into both), and `dump_env` emits two
+      # `export`s for it, so sourcing then reloading the env dump silently
+      # collapses both to one value. Reject the clash, like a duplicate CLI flag.
+      # The distinct keys here derive distinct CLI flags, so only the explicit
+      # `env:` collides.
+      Superconf.register "t3d.first", 0, env: "T3D_SHARED"
+      expect_raises(ArgumentError, /environment variable .* already used/) do
+        Superconf.register "t3d.second", 0, env: "T3D_SHARED"
+      end
+    end
+
+    it "rejects an option claiming a CLI flag reserved by load_args" do
+      # `load_args` always registers `--config` and `--dump-config` itself.
+      # An option deriving (here, key `config`) or given one of those flags
+      # would be registered first and then silently overwritten by the built-in
+      # handler (OptionParser keys handlers by flag string), leaving the option
+      # unreachable from the command line. Reject it up front.
+      expect_raises(ArgumentError, /reserved/) do
+        Superconf.register "config", "x"
+      end
+      expect_raises(ArgumentError, /reserved/) do
+        Superconf.register "t3c.dump", 0, cli: "--dump-config"
+      end
+    end
   end
 
   describe "typed accessors (option macro)" do
@@ -296,6 +335,19 @@ describe Superconf do
       Superconf.register "t8b.debug", false, cli: "-d"
       Superconf.load_args ["-d"], consume: false
       Superconf.get("t8b.debug", Bool).should be_true
+    end
+
+    it "does not let a bool's --no- negation clobber another option's explicit flag" do
+      # `t8e.color` (default true, flag `--t8e-color`) derives the negation
+      # `--no-t8e-color`, which is exactly the *primary* flag of `t8e.no_color`
+      # (the real NO_COLOR convention). The derived negation must be suppressed so
+      # `--no-t8e-color` reliably sets the explicit option rather than (depending
+      # on registration order) flipping `t8e.color`.
+      Superconf.register "t8e.color", true, cli: "--t8e-color"
+      Superconf.register "t8e.no_color", false, cli: "--no-t8e-color"
+      Superconf.load_args ["--no-t8e-color"], consume: false
+      Superconf.get("t8e.no_color", Bool).should be_true
+      Superconf.get("t8e.color", Bool).should be_true # untouched
     end
 
     it "ignores a recognized value flag given without its value, instead of crashing" do

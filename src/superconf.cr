@@ -40,6 +40,56 @@ module Superconf
     raise ArgumentError.new("Config option already registered: #{key.inspect}") if @@options.has_key?(key)
   end
 
+  # The CLI flags `load_args` always registers itself. An option that claimed
+  # one of these would have its handler overwritten by the built-in (handlers
+  # are keyed by flag string), so it must be rejected up front — see
+  # `ensure_cli_free`.
+  RESERVED_CLIS = {"--config", "--dump-config"}
+
+  # Guard `register`/`register_alias` against two options claiming the same CLI
+  # flag. Distinct keys can still derive (or be given) the same `cli` — e.g.
+  # `log.level` and `log_level` both yield `--log-level`, since `derive_cli`
+  # maps both `.` and `_` to `-` — and `load_args` keys its `OptionParser`
+  # handlers by flag string, so the second registration would silently overwrite
+  # the first, leaving one option unreachable from the command line (while env
+  # vars and config keys, named independently, would still set both — an
+  # inconsistency). Reject the clash up front, like the duplicate-key guard.
+  #
+  # The same shadowing happens against the built-in flags `--config` and
+  # `--dump-config` that `load_args` always registers: an option deriving (or
+  # given) one of those would be registered first and then overwritten by the
+  # built-in, again leaving it unreachable from the command line. Reject those
+  # too.
+  private def self.ensure_cli_free(cli : String) : Nil
+    if RESERVED_CLIS.includes?(cli)
+      raise ArgumentError.new("CLI flag #{cli.inspect} is reserved by Superconf and cannot be used by a config option")
+    end
+    if existing = @@options.each_value.find { |o| o.cli == cli }
+      raise ArgumentError.new("CLI flag #{cli.inspect} already used by config option #{existing.key.inspect}")
+    end
+  end
+
+  # Guard `register`/`register_alias` against two options claiming the same
+  # *explicit* `env:` name. Like a duplicate CLI flag (see `ensure_cli_free`),
+  # two options sharing one environment variable can't be set independently —
+  # `load_env` reads the single variable into both — and `dump_env` emits two
+  # `export FOO=…` lines for it, so sourcing then reloading the env dump silently
+  # collapses both options to one value, breaking the dump→reload round-trip.
+  #
+  # Only *explicit* names are checked. A *derived* name (prefix + key) cannot
+  # collide with another derived one without the two keys also deriving the same
+  # CLI flag — already rejected by `ensure_cli_free`, since `.`, `_` and `-` all
+  # fold together in both derivations. An explicit-vs-derived clash, by contrast,
+  # depends on `env_prefix` (set lazily, possibly after registration), so it
+  # can't be detected reliably here; explicit-vs-explicit is prefix-independent
+  # and is the part we can catch cleanly.
+  private def self.ensure_env_free(env : String?) : Nil
+    return unless env
+    if existing = @@options.each_value.find { |o| o.explicit_env == env }
+      raise ArgumentError.new("environment variable #{env.inspect} already used by config option #{existing.key.inspect}")
+    end
+  end
+
   # The environment-variable name for *opt*: its explicit `env:` if given, else
   # `env_prefix` + the upper-cased key. Computed lazily so a prefix set after
   # registration still applies.
@@ -63,11 +113,14 @@ module Superconf
                     parse : Proc(String, T)? = nil,
                     validate : Proc(T, Bool)? = nil) : Option(T) forall T
     ensure_unregistered key
+    the_cli = cli || derive_cli(key)
+    ensure_cli_free the_cli
+    ensure_env_free env
     opt = Option(T).new(
       key,
       default,
       explicit_env: env,
-      cli: cli || derive_cli(key),
+      cli: the_cli,
       group: group || derive_group(key),
       description: description,
       parse: parse,
@@ -187,10 +240,13 @@ module Superconf
                           group : String? = nil, description : String? = nil) : AbstractOption
     ensure_unregistered alias_key
     root = resolve self[target_key]
+    the_cli = cli || derive_cli(alias_key)
+    ensure_cli_free the_cli
+    ensure_env_free env
     a = root.build_alias(
       alias_key,
       explicit_env: env,
-      cli: cli || derive_cli(alias_key),
+      cli: the_cli,
       group: group || derive_group(alias_key),
       description: description || root.description,
     )
@@ -314,6 +370,9 @@ module Superconf
     # typed (non-String) option would raise and kill the whole program, so
     # record the offending flags here and skip them in the handler.
     missing = Set(String).new
+    # Every option's *primary* flag. A bool's auto-generated `--no-` negation is
+    # suppressed when it collides with one of these (see below).
+    primary_clis = @@options.values.map(&.cli).to_set
     @@options.each_value do |opt|
       if opt.bool?
         parser.on(opt.cli, opt.description) do
@@ -325,7 +384,15 @@ module Superconf
         # OptionParser (handlers are keyed by flag) and make the flag set
         # `false` — leaving no way to turn the option on.
         no = opt.cli.sub("--", "--no-")
-        if no != opt.cli
+        # Also suppress it when the negation collides with another option's
+        # *primary* flag — e.g. `option "color", true` derives `--no-color`,
+        # which is exactly the primary flag a `no_color` option derives (the
+        # real NO_COLOR convention). Since OptionParser keys handlers by flag,
+        # registering the negation would non-deterministically clobber (per
+        # registration order) the explicit option's handler, so `--no-color`
+        # might flip `color` instead of setting `no_color`. An explicit flag
+        # always wins over a derived negation.
+        if no != opt.cli && !primary_clis.includes?(no)
           parser.on(no, "Disable #{opt.key}") do
             opt.set_from_string("false", Source::CommandLine, "command line (#{no})")
           end
