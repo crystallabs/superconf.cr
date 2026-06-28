@@ -354,7 +354,17 @@ module Superconf
   # Load a config file by path. JSON is valid YAML, so the same parser handles
   # both `.yml` and `.json`.
   def self.load_file(path : String)
-    load_yaml File.read(path), "config file #{path}"
+    # Wrap a filesystem error (missing, unreadable, permission denied) in
+    # `Error`, just as `load_yaml` wraps a parse error: the class docs promise
+    # that rescuing `Superconf::Error` handles every malformed-config case, a
+    # config file included, so a raw `File::Error` must not leak out of an
+    # explicitly-named file (`--config FILE`, `configure!(file:)`, this call).
+    content = begin
+      File.read(path)
+    rescue ex : File::Error
+      raise Error.new("cannot read config file #{path}: #{ex.message}")
+    end
+    load_yaml content, "config file #{path}"
   end
 
   # The default per-user config path: `$XDG_CONFIG_HOME/<app_name>/config.yml`,
