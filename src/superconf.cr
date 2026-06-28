@@ -35,6 +35,11 @@ module Superconf
     @@options.has_key? key
   end
 
+  # Guard `register`/`register_alias` against re-using a key.
+  private def self.ensure_unregistered(key : String) : Nil
+    raise ArgumentError.new("Config option already registered: #{key.inspect}") if @@options.has_key?(key)
+  end
+
   # The environment-variable name for *opt*: its explicit `env:` if given, else
   # `env_prefix` + the upper-cased key. Computed lazily so a prefix set after
   # registration still applies.
@@ -57,7 +62,7 @@ module Superconf
                     group : String? = nil, description : String = "",
                     parse : Proc(String, T)? = nil,
                     validate : Proc(T, Bool)? = nil) : Option(T) forall T
-    raise ArgumentError.new("Config option already registered: #{key.inspect}") if @@options.has_key?(key)
+    ensure_unregistered key
     opt = Option(T).new(
       key,
       default,
@@ -180,7 +185,7 @@ module Superconf
   def self.register_alias(alias_key : String, target_key : String, *,
                           env : String? = nil, cli : String? = nil,
                           group : String? = nil, description : String? = nil) : AbstractOption
-    raise ArgumentError.new("Config option already registered: #{alias_key.inspect}") if @@options.has_key?(alias_key)
+    ensure_unregistered alias_key
     root = resolve self[target_key]
     a = root.build_alias(
       alias_key,
