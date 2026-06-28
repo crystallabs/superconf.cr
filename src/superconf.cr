@@ -291,9 +291,16 @@ module Superconf
         parser.on(opt.cli, opt.description) do
           opt.set_from_string("true", Source::CommandLine, "command line (#{opt.cli})")
         end
+        # Only add a `--no-` negation for a long flag. A short or custom flag
+        # with no leading `--` (e.g. `-d`) leaves the string unchanged, so
+        # registering it again would overwrite the positive handler in
+        # OptionParser (handlers are keyed by flag) and make the flag set
+        # `false` — leaving no way to turn the option on.
         no = opt.cli.sub("--", "--no-")
-        parser.on(no, "Disable #{opt.key}") do
-          opt.set_from_string("false", Source::CommandLine, "command line (#{no})")
+        if no != opt.cli
+          parser.on(no, "Disable #{opt.key}") do
+            opt.set_from_string("false", Source::CommandLine, "command line (#{no})")
+          end
         end
       else
         parser.on("#{opt.cli}=VALUE", opt.description) do |v|

@@ -210,6 +210,15 @@ describe Superconf do
       Superconf.get("t8.on", Bool).should be_true
     end
 
+    it "turns on a bool with a short CLI flag (no broken --no- duplicate)" do
+      # A bool registered with a short flag has no leading `--` to rewrite into a
+      # negation, so the derived `--no-` would equal the flag itself. Registering
+      # it twice must not overwrite the positive handler and make `-d` set false.
+      Superconf.register "t8b.debug", false, cli: "-d"
+      Superconf.load_args ["-d"], consume: false
+      Superconf.get("t8b.debug", Bool).should be_true
+    end
+
     it "loads nested and flat keys from YAML, ignoring unknowns" do
       Superconf.register "t9.alpha", 0
       Superconf.register "t9.beta", 0
