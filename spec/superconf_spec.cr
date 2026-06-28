@@ -250,6 +250,18 @@ describe Superconf do
       Superconf.get("t8c.name", String).should eq ""
     end
 
+    it "ignores an explicit empty value (--flag=) for a typed option, instead of crashing" do
+      # `--flag=` delivers a *present but empty* value, so `missing_option`
+      # never fires — yet force-parsing "" into a non-String option still
+      # crashes (e.g. `"".to_i`). It must be treated like an unset value (a
+      # no-op), mirroring `load_env`'s empty-env handling, so one stray empty
+      # CLI argument can't abort the whole parse.
+      Superconf.register "t8d.workers", 7
+      Superconf.load_args ["--t8d-workers="], consume: false # must not raise
+      Superconf.get("t8d.workers", Int32).should eq 7        # default, untouched
+      Superconf["t8d.workers"].source.should eq Superconf::Source::Default
+    end
+
     it "loads nested and flat keys from YAML, ignoring unknowns" do
       Superconf.register "t9.alpha", 0
       Superconf.register "t9.beta", 0

@@ -246,6 +246,13 @@ module Superconf
     opt
   end
 
+  # Does *opt* carry a `String` value (directly, or through an alias)? An empty
+  # CLI value is a legitimate value only for a String option; for any other type
+  # parsing "" raises, so `load_args` treats the two cases differently.
+  private def self.string_valued?(opt : AbstractOption) : Bool
+    resolve(opt).is_a?(Option(String))
+  end
+
   # Iterate every option, ordered by key.
   def self.each(& : AbstractOption ->) : Nil
     sorted.each { |o| yield o }
@@ -320,10 +327,20 @@ module Superconf
         end
       else
         parser.on("#{opt.cli}=VALUE", opt.description) do |v|
-          # A recognized value flag given with no argument (e.g. a trailing
-          # `--flag`) lands here with an empty `v`; ignore it instead of
-          # force-parsing "" into a crash.
-          next if v.empty? && missing.includes?(opt.cli)
+          # An empty value reaches here in two shapes, both of which would
+          # crash a typed (non-String) option by force-parsing "" into its
+          # type (`"".to_i`, `"".to_f`, an empty enum, etc. all raise):
+          #   * a *missing* value — a trailing `--flag` with nothing after it,
+          #     recorded in `missing` by the `missing_option` handler; and
+          #   * an *explicit* empty assignment — `--flag=` — where the value is
+          #     present but empty, so `missing_option` never fires and the flag
+          #     is absent from `missing`.
+          # Skip both for a non-String option, mirroring `load_env`'s "an empty
+          # value means unset" rule, so one stray empty CLI argument (e.g.
+          # `--workers=$VAR` with `$VAR` unset) can't abort the whole parse. For
+          # a String option an explicit `--flag=` still sets "" — a real value —
+          # while a truly missing value is still skipped.
+          next if v.empty? && (missing.includes?(opt.cli) || !string_valued?(opt))
           opt.set_from_string(v, Source::CommandLine, "command line (#{opt.cli})")
         end
       end
