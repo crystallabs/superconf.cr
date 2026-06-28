@@ -247,6 +247,16 @@ describe Superconf do
       Superconf.get("t9.alpha", Int32).should eq 11
       Superconf.get("t9.beta", Int32).should eq 22
     end
+
+    it "wraps a malformed config document in Superconf::Error" do
+      # The class docs promise that rescuing `Superconf::Error` handles every
+      # malformed-config case, a config file included — so a syntactically
+      # broken document must not leak a raw `YAML::ParseException`.
+      Superconf.register "t10.n", 1
+      expect_raises(Superconf::Error, /cannot parse config file/) do
+        Superconf.load_yaml "t10:\n  n: 1\n :\n  - [", "config file bad.yml"
+      end
+    end
   end
 
   describe "dumping" do

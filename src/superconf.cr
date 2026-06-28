@@ -337,7 +337,17 @@ module Superconf
   # group mappings (`screen: {resize_interval: 0.5}`) and/or flat dotted keys
   # (`screen.resize_interval: 0.5`). Unknown keys are ignored.
   def self.load_yaml(input : String | IO, origin : String = "YAML")
-    apply_any YAML.parse(input), Source::ConfigFile, origin
+    # Wrap a *syntactically* malformed document in `Error`: the class docs
+    # promise that rescuing `Superconf::Error` handles every malformed-config
+    # case, a config file included, so a raw `YAML::ParseException` must not
+    # leak out. `apply_any`'s own value errors are already `Error`s and pass
+    # through unchanged.
+    doc = begin
+      YAML.parse input
+    rescue ex : YAML::ParseException
+      raise Error.new("cannot parse #{origin}: #{ex.message}")
+    end
+    apply_any doc, Source::ConfigFile, origin
     self
   end
 
