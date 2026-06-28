@@ -248,6 +248,21 @@ describe Superconf do
       Superconf.get("t9.beta", Int32).should eq 22
     end
 
+    it "ignores a sequence value for a scalar key (no silent stringification)" do
+      # A YAML/JSON sequence is not a scalar leaf. It must be ignored like a
+      # mapping value for a scalar key — not fall through and get stored as the
+      # array's Crystal inspect string (e.g. "[1, 2, 3]") into a String option.
+      Superconf.register "t9b.title", "orig"
+      Superconf.load_yaml "t9b.title: [1, 2, 3]"
+      Superconf.get("t9b.title", String).should eq "orig" # untouched, no garbage
+      Superconf["t9b.title"].source.should eq Superconf::Source::Default
+
+      # A quoted scalar that merely *looks* like a list is a real scalar value
+      # and still applies.
+      Superconf.load_yaml %(t9b.title: "[1, 2, 3]")
+      Superconf.get("t9b.title", String).should eq "[1, 2, 3]"
+    end
+
     it "wraps a missing config file in Superconf::Error" do
       # The class docs promise that rescuing `Superconf::Error` handles every
       # malformed-config case, a config file included — so an explicitly-named
@@ -353,6 +368,26 @@ describe Superconf do
       # A finite Float64 still emits as a native JSON number.
       Superconf.register "t17.finite", 2.5
       JSON.parse(Superconf.to_json)["t17"]["finite"].as_f.should eq 2.5
+    end
+
+    it "dumps a non-finite Float64 as a native YAML float that re-reads as a float" do
+      # `emit_yaml` promises numerics re-read with their native YAML types. A
+      # bare `Infinity`/`NaN` would re-read as a *string*, breaking that and the
+      # "re-loadable YAML" contract; the YAML special-float spellings re-read as
+      # native floats.
+      o = Superconf.register "t18.rate", 1.0
+      o.set_from_string "inf", Superconf::Source::Env, "e"
+      YAML.parse(Superconf.to_yaml)["t18"]["rate"].as_f.should eq Float64::INFINITY
+
+      o.set_from_string "nan", Superconf::Source::Runtime, "r"
+      YAML.parse(Superconf.to_yaml)["t18"]["rate"].as_f.nan?.should be_true
+
+      # Round-trips back through superconf to the same value.
+      Superconf.get("t18.rate", Float64).nan?.should be_true
+
+      # A finite Float64 still emits as a native YAML number.
+      Superconf.register "t18.finite", 2.5
+      YAML.parse(Superconf.to_yaml)["t18"]["finite"].as_f.should eq 2.5
     end
 
     it "emits a sourceable env script, shell-quoting values" do

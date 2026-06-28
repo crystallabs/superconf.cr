@@ -188,7 +188,16 @@ module Superconf
     # / int and corrupt the value on reload. `stringify` already normalizes
     # `Time::Span` to seconds.
     def emit_yaml(yaml : YAML::Builder) : Nil
-      {% if T == Bool || T == Int32 || T == Int64 || T == Float64 || T == Time::Span %}
+      {% if T == Float64 %}
+        # A non-finite Float64 (reachable: `cast` accepts "inf"/"nan" via
+        # `String#to_f`) has no plain decimal form. Emitting `Infinity`/`NaN`
+        # would re-read as a *string*, not a float — breaking the "native YAML
+        # types" promise above (mirrors the JSON path, which can't even emit one
+        # natively). YAML's special-float spellings `.inf`/`-.inf`/`.nan` re-read
+        # as native floats. Finite floats keep their plain scalar form.
+        v = @value
+        yaml.scalar(v.finite? ? stringify : (v.nan? ? ".nan" : (v > 0 ? ".inf" : "-.inf")))
+      {% elsif T == Bool || T == Int32 || T == Int64 || T == Time::Span %}
         yaml.scalar stringify
       {% else %}
         yaml.scalar stringify, style: YAML::ScalarStyle::DOUBLE_QUOTED
