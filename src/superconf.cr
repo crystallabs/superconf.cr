@@ -357,11 +357,15 @@ module Superconf
     # Wrap a filesystem error (missing, unreadable, permission denied) in
     # `Error`, just as `load_yaml` wraps a parse error: the class docs promise
     # that rescuing `Superconf::Error` handles every malformed-config case, a
-    # config file included, so a raw `File::Error` must not leak out of an
+    # config file included, so a raw error must not leak out of an
     # explicitly-named file (`--config FILE`, `configure!(file:)`, this call).
+    # Rescue `IO::Error`, not just `File::Error`: a missing/unreadable file
+    # raises `File::Error` (a subclass), but pointing at a *directory* (e.g.
+    # `--config ~/.config/myapp/`) raises a plain `IO::Error` ("Is a directory"),
+    # which `File::Error` would miss — letting it leak.
     content = begin
       File.read(path)
-    rescue ex : File::Error
+    rescue ex : IO::Error
       raise Error.new("cannot read config file #{path}: #{ex.message}")
     end
     load_yaml content, "config file #{path}"

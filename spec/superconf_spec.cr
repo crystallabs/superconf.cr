@@ -272,6 +272,15 @@ describe Superconf do
       end
     end
 
+    it "wraps a config path that is a directory in Superconf::Error" do
+      # Reading a directory raises a plain `IO::Error` ("Is a directory"), not a
+      # `File::Error` — pointing `--config` at a directory is a realistic mistake
+      # and must still surface as `Superconf::Error`, not leak the raw IO error.
+      expect_raises(Superconf::Error, /cannot read config file/) do
+        Superconf.load_file Dir.tempdir
+      end
+    end
+
     it "wraps a malformed config document in Superconf::Error" do
       # The class docs promise that rescuing `Superconf::Error` handles every
       # malformed-config case, a config file included — so a syntactically
