@@ -46,6 +46,17 @@ module Superconf
   # `ensure_cli_free`.
   RESERVED_CLIS = {"--config", "--dump-config"}
 
+  # Raise an `ArgumentError` naming the offending option if any already-registered
+  # option matches the given predicate. This is the shared find-and-raise body of
+  # the `ensure_*_free` collision guards below, which differ only in *label* (the
+  # surface being claimed) and in the predicate that detects the clash; the raised
+  # message always ends "… already used by config option <key>".
+  private def self.reject_clash(label : String, & : AbstractOption -> Bool) : Nil
+    if existing = @@options.each_value.find { |o| yield o }
+      raise ArgumentError.new("#{label} already used by config option #{existing.key.inspect}")
+    end
+  end
+
   # Guard `register`/`register_alias` against two options claiming the same CLI
   # flag. Distinct keys can still derive (or be given) the same `cli` — e.g.
   # `log.level` and `log_level` both yield `--log-level`, since `derive_cli`
@@ -64,9 +75,7 @@ module Superconf
     if RESERVED_CLIS.includes?(cli)
       raise ArgumentError.new("CLI flag #{cli.inspect} is reserved by Superconf and cannot be used by a config option")
     end
-    if existing = @@options.each_value.find { |o| o.cli == cli }
-      raise ArgumentError.new("CLI flag #{cli.inspect} already used by config option #{existing.key.inspect}")
-    end
+    reject_clash("CLI flag #{cli.inspect}") { |o| o.cli == cli }
   end
 
   # Guard `register`/`register_alias` against two options claiming the same
@@ -84,9 +93,7 @@ module Superconf
   # the part we can catch cleanly here.
   private def self.ensure_env_free(env : String?) : Nil
     return unless env
-    if existing = @@options.each_value.find { |o| o.explicit_env == env }
-      raise ArgumentError.new("environment variable #{env.inspect} already used by config option #{existing.key.inspect}")
-    end
+    reject_clash("environment variable #{env.inspect}") { |o| o.explicit_env == env }
   end
 
   # Guard two *derived* env names from colliding. Unlike a derived *CLI* clash
@@ -105,8 +112,8 @@ module Superconf
   # collision and is the documented escape hatch.
   private def self.ensure_derived_env_free(key : String) : Nil
     suffix = derived_env_suffix(key)
-    if existing = @@options.each_value.find { |o| o.explicit_env.nil? && derived_env_suffix(o.key) == suffix }
-      raise ArgumentError.new("environment variable #{(@@env_prefix + suffix).inspect} (derived from key #{key.inspect}) already used by config option #{existing.key.inspect}")
+    reject_clash("environment variable #{(@@env_prefix + suffix).inspect} (derived from key #{key.inspect})") do |o|
+      o.explicit_env.nil? && derived_env_suffix(o.key) == suffix
     end
   end
 
