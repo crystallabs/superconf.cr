@@ -250,18 +250,24 @@ module Superconf
           raise ArgumentError.new("expected a boolean (true/false, yes/no, on/off, 1/0)")
         end
       {% elsif T == Int32 %}
-        str.strip.to_i
+        # `prefix: true` also accepts `0x`/`0o`/`0b` (hex/octal/binary) and a
+        # leading sign before the prefix (e.g. `-0x1F`); a plain decimal string
+        # still parses as base 10 (a bare leading `0` is NOT treated as octal).
+        str.strip.to_i prefix: true
       {% elsif T == Int64 %}
-        str.strip.to_i64
+        str.strip.to_i64 prefix: true
       {% elsif T == Float64 %}
         str.strip.to_f
       {% elsif T == String %}
         str
       {% elsif T == Char %}
-        raise ArgumentError.new("expected a single character") unless str.size == 1
+        # A `Char` is exactly one Unicode codepoint, so a multi-codepoint
+        # grapheme cluster (e.g. a flag emoji) genuinely can't be stored here —
+        # reject it rather than silently truncate to its first codepoint.
+        raise ArgumentError.new("expected a single character (one codepoint)") unless str.size == 1
         str[0]
       {% elsif T == Time::Span %}
-        str.strip.to_f.seconds
+        parse_time_span str
       {% elsif T < Enum %}
         {% if T.annotation(Flags) %}
           # Reject input with no recognizable flag (empty, or only separators /
@@ -281,6 +287,27 @@ module Superconf
         # used above; reaching here means none was supplied.
         raise "Superconf: no built-in parser for #{self.class}; pass a `parse:` proc to `register`"
       {% end %}
+    end
+
+    # Parse a duration string into a `Time::Span`. The numeric part may carry an
+    # optional unit suffix: `ms` (milliseconds), `s` (seconds), `m` (minutes),
+    # `h` (hours) or `d` (days). A bare number with NO suffix means seconds, so
+    # existing configs keep their meaning. Suffixes are case-insensitive and may
+    # be separated from the number by whitespace.
+    private def parse_time_span(str : String) : Time::Span
+      s = str.strip
+      m = s.match(/\A([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s*([a-zA-Z]*)\z/)
+      raise ArgumentError.new(%(expected a duration like "500ms", "2m", "1.5h" or a bare number of seconds)) unless m
+      num = m[1].to_f
+      case m[2].downcase
+      when "", "s" then num.seconds
+      when "ms"    then num.milliseconds
+      when "m"     then num.minutes
+      when "h"     then num.hours
+      when "d"     then num.days
+      else
+        raise ArgumentError.new("unknown time unit #{m[2].inspect} (use ms, s, m, h, d)")
+      end
     end
 
     private def render(v : T) : String

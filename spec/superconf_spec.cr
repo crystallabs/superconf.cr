@@ -135,6 +135,70 @@ describe Superconf do
       end
     end
 
+    it "parses Time::Span unit suffixes (and bare seconds stays seconds)" do
+      Superconf.register "t5d.span", 1.second
+
+      # Backward compatibility: a bare number still means seconds.
+      Superconf["t5d.span"].set_from_string "0.5", Superconf::Source::Runtime, "r"
+      Superconf.get("t5d.span", Time::Span).should eq 0.5.seconds
+
+      Superconf["t5d.span"].set_from_string "500ms", Superconf::Source::Runtime, "r"
+      Superconf.get("t5d.span", Time::Span).should eq 500.milliseconds
+
+      Superconf["t5d.span"].set_from_string "2m", Superconf::Source::Runtime, "r"
+      Superconf.get("t5d.span", Time::Span).should eq 2.minutes
+
+      Superconf["t5d.span"].set_from_string "1h", Superconf::Source::Runtime, "r"
+      Superconf.get("t5d.span", Time::Span).should eq 1.hour
+
+      Superconf["t5d.span"].set_from_string "1d", Superconf::Source::Runtime, "r"
+      Superconf.get("t5d.span", Time::Span).should eq 1.day
+
+      # Case-insensitive and tolerant of whitespace before the unit.
+      Superconf["t5d.span"].set_from_string "1.5 H", Superconf::Source::Runtime, "r"
+      Superconf.get("t5d.span", Time::Span).should eq 1.5.hours
+    end
+
+    it "rejects an unparseable / unknown-unit Time::Span" do
+      Superconf.register "t5e.span", 1.second
+      expect_raises(Superconf::Error, /cannot parse "abc"/) do
+        Superconf["t5e.span"].set_from_string "abc", Superconf::Source::Env, "e"
+      end
+      expect_raises(Superconf::Error, /unknown time unit/) do
+        Superconf["t5e.span"].set_from_string "5fortnights", Superconf::Source::Env, "e"
+      end
+    end
+
+    it "parses ints in hex/octal/binary as well as decimal" do
+      Superconf.register "t5f.n32", 0
+      Superconf.register "t5f.n64", 0_i64
+
+      # Decimal still works (backward compatible).
+      Superconf["t5f.n32"].set_from_string "42", Superconf::Source::Runtime, "r"
+      Superconf.get("t5f.n32", Int32).should eq 42
+
+      Superconf["t5f.n32"].set_from_string "0x1F", Superconf::Source::Runtime, "r"
+      Superconf.get("t5f.n32", Int32).should eq 31
+
+      Superconf["t5f.n32"].set_from_string "0o17", Superconf::Source::Runtime, "r"
+      Superconf.get("t5f.n32", Int32).should eq 15
+
+      Superconf["t5f.n32"].set_from_string "0b1010", Superconf::Source::Runtime, "r"
+      Superconf.get("t5f.n32", Int32).should eq 10
+
+      Superconf["t5f.n32"].set_from_string "-0x1F", Superconf::Source::Runtime, "r"
+      Superconf.get("t5f.n32", Int32).should eq -31
+
+      Superconf["t5f.n64"].set_from_string "0xFF", Superconf::Source::Runtime, "r"
+      Superconf.get("t5f.n64", Int64).should eq 255_i64
+
+      # Use the same (Runtime) source as the sets above so the value is not
+      # skipped by the lower-precedence-source optimization and the parse runs.
+      expect_raises(Superconf::Error, /cannot parse "nope"/) do
+        Superconf["t5f.n32"].set_from_string "nope", Superconf::Source::Runtime, "r"
+      end
+    end
+
     it "uses a custom parse proc when provided" do
       Superconf.register "t6.point", {0, 0},
         parse: ->(s : String) {
