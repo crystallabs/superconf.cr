@@ -286,6 +286,13 @@ module Superconf
   def self.load_args(argv : Array(String) = ARGV, *, consume : Bool = true)
     target = consume ? argv : argv.dup
     parser = OptionParser.new
+    # Flags OptionParser reported as given without their required value. The
+    # `missing_option` handler below is a no-op — a recognized flag missing its
+    # value is ignored rather than aborting the program — but OptionParser still
+    # calls the value handler afterwards with an empty string. Parsing "" into a
+    # typed (non-String) option would raise and kill the whole program, so
+    # record the offending flags here and skip them in the handler.
+    missing = Set(String).new
     @@options.each_value do |opt|
       if opt.bool?
         parser.on(opt.cli, opt.description) do
@@ -304,11 +311,16 @@ module Superconf
         end
       else
         parser.on("#{opt.cli}=VALUE", opt.description) do |v|
+          # A recognized value flag given with no argument (e.g. a trailing
+          # `--flag`) lands here with an empty `v`; ignore it instead of
+          # force-parsing "" into a crash.
+          next if v.empty? && missing.includes?(opt.cli)
           opt.set_from_string(v, Source::CommandLine, "command line (#{opt.cli})")
         end
       end
     end
     parser.on("--config=FILE", "Load configuration from FILE (YAML or JSON)") do |f|
+      next if f.empty? # `--config` with no path: nothing to load (see `missing`)
       load_file f
     end
     parser.on("--dump-config [FORMAT]", "Dump configuration (yaml|json|env|pretty|report) and exit") do |fmt|
@@ -316,7 +328,7 @@ module Superconf
       exit
     end
     parser.invalid_option { } # leave unknown flags for the app
-    parser.missing_option { }
+    parser.missing_option { |flag| missing << flag }
     parser.parse target
     self
   end

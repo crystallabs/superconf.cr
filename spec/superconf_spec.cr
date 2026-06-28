@@ -219,6 +219,22 @@ describe Superconf do
       Superconf.get("t8b.debug", Bool).should be_true
     end
 
+    it "ignores a recognized value flag given without its value, instead of crashing" do
+      # A typed (non-String) option whose flag appears with no argument (a
+      # trailing `--flag`) must not abort the program by parsing "" — the
+      # no-op `missing_option` means such a flag is left untouched.
+      Superconf.register "t8c.workers", 7
+      Superconf.load_args ["--t8c-workers"], consume: false # no value follows
+      Superconf.get("t8c.workers", Int32).should eq 7       # default, untouched
+      Superconf["t8c.workers"].source.should eq Superconf::Source::Default
+
+      # A normal value still applies, and an explicit empty string still sets a
+      # String option (only the truly-missing case is skipped).
+      Superconf.register "t8c.name", "orig"
+      Superconf.load_args ["--t8c-name="], consume: false
+      Superconf.get("t8c.name", String).should eq ""
+    end
+
     it "loads nested and flat keys from YAML, ignoring unknowns" do
       Superconf.register "t9.alpha", 0
       Superconf.register "t9.beta", 0
