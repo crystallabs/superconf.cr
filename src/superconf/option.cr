@@ -275,9 +275,18 @@ module Superconf
     end
 
     # Render a seconds value without a needless trailing ".0" for whole
-    # numbers (so `1.second` dumps as `1`, not `1.0`).
+    # numbers (so `1.second` dumps as `1`, not `1.0`). A value outside `Int64`'s
+    # range (e.g. `Time::Span::MAX`, whose `total_seconds` rounds up to 2**63) —
+    # or a non-finite one — is left as a `Float64`: `to_i64` would otherwise
+    # raise `OverflowError` and crash every dump/`stringify` path. `2**63` (one
+    # past `Int64::MAX`) is the exact threshold, since `Int64::MAX.to_f` rounds
+    # up to it.
     private def normalize(seconds : Float64)
-      seconds == seconds.to_i64 ? seconds.to_i64 : seconds
+      if seconds.finite? && seconds.abs < 9223372036854775808.0 && seconds == seconds.to_i64
+        seconds.to_i64
+      else
+        seconds
+      end
     end
   end
 

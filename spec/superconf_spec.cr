@@ -319,6 +319,17 @@ describe Superconf do
       lvl.value.should eq 7
     end
 
+    it "stringifies/dumps an extreme Time::Span without overflowing" do
+      # `Time::Span::MAX.total_seconds` rounds up to 2**63, one past Int64::MAX,
+      # so the whole-number check must not blindly call `to_i64` (it would raise
+      # OverflowError and crash every dump path). Such a value stays a float.
+      o = Superconf.register "t16.span", 1.second
+      o.set Time::Span::MAX
+      o.stringify.should_not be_empty            # no OverflowError
+      Superconf.to_yaml.should contain "t16"     # dump succeeds too
+      JSON.parse(Superconf.to_json)["t16"]["span"].as_f # valid JSON float
+    end
+
     it "emits a sourceable env script, shell-quoting values" do
       Superconf.register "t15.name", "a b"
       io = IO::Memory.new
