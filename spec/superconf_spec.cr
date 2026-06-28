@@ -311,7 +311,7 @@ describe Superconf do
       expect_raises(Superconf::Error, /default value -1 fails validation/) do
         Superconf.set_default "v5.n", -1
       end
-      Superconf.get("v5.n", Int32).should eq 5    # effective value untouched
+      Superconf.get("v5.n", Int32).should eq 5        # effective value untouched
       Superconf["v5.n"].default_string.should eq "10" # invalid default not recorded
     end
   end
@@ -352,7 +352,7 @@ describe Superconf do
       # given without its value.
       Superconf.register "t7b.n", 5
       ENV["T7B_N"] = ""
-      Superconf.load_env # must not raise
+      Superconf.load_env                        # must not raise
       Superconf.get("t7b.n", Int32).should eq 5 # default, untouched
       Superconf["t7b.n"].source.should eq Superconf::Source::Default
     ensure
@@ -473,9 +473,9 @@ describe Superconf do
         t9c.n: ""
         t9c.title: ""
         YAML
-      Superconf.get("t9c.n", Int32).should eq 7                  # untouched
+      Superconf.get("t9c.n", Int32).should eq 7 # untouched
       Superconf["t9c.n"].source.should eq Superconf::Source::Default
-      Superconf.get("t9c.title", String).should eq ""            # empty String is a real value
+      Superconf.get("t9c.title", String).should eq "" # empty String is a real value
       Superconf["t9c.title"].source.should eq Superconf::Source::ConfigFile
     end
 
@@ -547,7 +547,7 @@ describe Superconf do
     end
 
     it "round-trips a top-level key that collides with a group name" do
-      flag = Superconf.register "rt3", false # top-level scalar
+      flag = Superconf.register "rt3", false  # top-level scalar
       lvl = Superconf.register "rt3.level", 0 # group sharing that name
       flag.set_from_string "true", Superconf::Source::ConfigFile, "seed"
       lvl.set_from_string "7", Superconf::Source::ConfigFile, "seed"
@@ -574,8 +574,8 @@ describe Superconf do
       # OverflowError and crash every dump path). Such a value stays a float.
       o = Superconf.register "t16.span", 1.second
       o.set Time::Span::MAX
-      o.stringify.should_not be_empty            # no OverflowError
-      Superconf.to_yaml.should contain "t16"     # dump succeeds too
+      o.stringify.should_not be_empty                   # no OverflowError
+      Superconf.to_yaml.should contain "t16"            # dump succeeds too
       JSON.parse(Superconf.to_json)["t16"]["span"].as_f # valid JSON float
     end
 
