@@ -78,6 +78,24 @@ describe Superconf do
       end
     end
 
+    it "rejects two derived env vars that collide only by letter case" do
+      # `env_name` upper-cases the key while `derive_cli` preserves case, so two
+      # keys differing only in letter case derive the *same* env var (`ENVCASE_
+      # FOO`) but *different* CLI flags (`--envcase-foo` vs `--envcasE-foo`). The
+      # CLI guard therefore cannot catch this; without a dedicated derived-env
+      # guard, `load_env` would read the one variable into both options and
+      # `dump_env` would emit two identical `export` lines, collapsing both to one
+      # value on reload — the very breakage the explicit-env guard prevents.
+      a = Superconf.register "envcase.foo", 1
+      Superconf.env_name(a).should eq "ENVCASE_FOO"
+      expect_raises(ArgumentError, /environment variable .* already used/) do
+        Superconf.register "envcasE.foo", 2 # same derived env, different CLI flag
+      end
+      # An explicit `env:` is the documented escape hatch and registers cleanly.
+      b = Superconf.register "envcasE.foo", 2, env: "ENVCASE_FOO_2"
+      Superconf.env_name(b).should eq "ENVCASE_FOO_2"
+    end
+
     it "rejects an option claiming a CLI flag reserved by load_args" do
       # `load_args` always registers `--config` and `--dump-config` itself.
       # An option deriving (here, key `config`) or given one of those flags
@@ -90,6 +108,27 @@ describe Superconf do
       expect_raises(ArgumentError, /reserved/) do
         Superconf.register "t3c.dump", 0, cli: "--dump-config"
       end
+    end
+
+    it "treats an empty explicit env:/cli: override as no override (derives instead)" do
+      # A blank `env:`/`cli:` must fold into the derived name, not become the
+      # option's actual env-var name / flag. An empty env name is unusable:
+      # `ENV[""]` is never set (so `load_env` can't reach the option) and
+      # `dump_env` would emit the invalid line `export ='value'`. An empty cli is
+      # an unusable, valueless flag. Empty == "not provided", like `nil`.
+      o = Superconf.register "t3e.port", 80, env: "", cli: ""
+      o.explicit_env.should be_nil
+      Superconf.env_name(o).should eq "T3E_PORT" # derived, not ""
+      o.cli.should eq "--t3e-port"               # derived, not "=VALUE"
+
+      # The derived surfaces actually work, and the env dump round-trips.
+      ENV["T3E_PORT"] = "81"
+      Superconf.load_env
+      o.value.should eq 81
+      String.build { |s| Superconf.dump s, Superconf::Format::Env }
+        .should contain "export T3E_PORT='81'"
+    ensure
+      ENV.delete "T3E_PORT"
     end
   end
 
@@ -320,6 +359,22 @@ describe Superconf do
       ENV.delete "T7B_N"
     end
 
+    it "sets a String option to \"\" from an empty env var, like --flag= and key: \"\"" do
+      # The empty-value rule must be consistent across all three loaders: an
+      # empty value is "unset" only for a typed (non-String) option. A *String*
+      # option takes "" as a real value from the environment, exactly as it does
+      # from `--flag=` (`load_args`) and `key: ""` (config). Previously `load_env`
+      # skipped *all* empty env vars, so an empty `MYAPP_TITLE=` was silently
+      # dropped instead of clearing a String option to "".
+      Superconf.register "t7c.title", "orig"
+      ENV["T7C_TITLE"] = ""
+      Superconf.load_env
+      Superconf.get("t7c.title", String).should eq "" # empty String is a real value
+      Superconf["t7c.title"].source.should eq Superconf::Source::Env
+    ensure
+      ENV.delete "T7C_TITLE"
+    end
+
     it "applies CLI flags at CommandLine precedence" do
       Superconf.register "t8.name", "a"
       Superconf.register "t8.on", false
@@ -404,6 +459,24 @@ describe Superconf do
       # and still applies.
       Superconf.load_yaml %(t9b.title: "[1, 2, 3]")
       Superconf.get("t9b.title", String).should eq "[1, 2, 3]"
+    end
+
+    it "treats a present-but-empty config scalar as unset for a typed option, instead of crashing" do
+      # `key: ""` for a non-String option (here Int) must be treated like an
+      # unset value — a no-op — mirroring `load_env`/`load_args`, rather than
+      # force-parsing "" into the type (`"".to_i`) and aborting the whole load
+      # over one benign empty value (e.g. a templated config where a variable
+      # expanded to nothing). A String option still takes "" as a real value.
+      Superconf.register "t9c.n", 7
+      Superconf.register "t9c.title", "orig"
+      Superconf.load_yaml <<-YAML
+        t9c.n: ""
+        t9c.title: ""
+        YAML
+      Superconf.get("t9c.n", Int32).should eq 7                  # untouched
+      Superconf["t9c.n"].source.should eq Superconf::Source::Default
+      Superconf.get("t9c.title", String).should eq ""            # empty String is a real value
+      Superconf["t9c.title"].source.should eq Superconf::Source::ConfigFile
     end
 
     it "wraps a missing config file in Superconf::Error" do

@@ -76,13 +76,12 @@ module Superconf
   # `export FOO=…` lines for it, so sourcing then reloading the env dump silently
   # collapses both options to one value, breaking the dump→reload round-trip.
   #
-  # Only *explicit* names are checked. A *derived* name (prefix + key) cannot
-  # collide with another derived one without the two keys also deriving the same
-  # CLI flag — already rejected by `ensure_cli_free`, since `.`, `_` and `-` all
-  # fold together in both derivations. An explicit-vs-derived clash, by contrast,
+  # Only *explicit* names are checked here. A *derived* name (prefix + key) can
+  # still collide with another derived one — see `ensure_derived_env_free`, which
+  # catches that case separately. An explicit-vs-derived clash, by contrast,
   # depends on `env_prefix` (set lazily, possibly after registration), so it
-  # can't be detected reliably here; explicit-vs-explicit is prefix-independent
-  # and is the part we can catch cleanly.
+  # can't be detected reliably; explicit-vs-explicit is prefix-independent and is
+  # the part we can catch cleanly here.
   private def self.ensure_env_free(env : String?) : Nil
     return unless env
     if existing = @@options.each_value.find { |o| o.explicit_env == env }
@@ -90,11 +89,38 @@ module Superconf
     end
   end
 
+  # Guard two *derived* env names from colliding. Unlike a derived *CLI* clash
+  # (caught by `ensure_cli_free`), a derived env clash is **not** implied by a CLI
+  # clash: `env_name` upper-cases the key (`derived_env_suffix`) while
+  # `derive_cli` preserves case, so two keys differing only in letter case —
+  # e.g. `case.foo` vs `casE.foo` — derive the *same* env var (`CASE_FOO`) but
+  # *different* CLI flags (`--case-foo` vs `--casE-foo`). Left unguarded,
+  # `load_env` would read the one variable into *both* options, and `dump_env`
+  # would emit two `export CASE_FOO=…` lines, so sourcing then reloading the env
+  # dump collapses both options to one value — exactly the dump→reload breakage
+  # `ensure_env_free` prevents for explicit names. The check is
+  # prefix-independent (both derived names share the lazy `env_prefix`), so it
+  # holds regardless of when `env_prefix` is set. Only options that *derive*
+  # their env (no explicit `env:`) are compared; an explicit name sidesteps the
+  # collision and is the documented escape hatch.
+  private def self.ensure_derived_env_free(key : String) : Nil
+    suffix = derived_env_suffix(key)
+    if existing = @@options.each_value.find { |o| o.explicit_env.nil? && derived_env_suffix(o.key) == suffix }
+      raise ArgumentError.new("environment variable #{(@@env_prefix + suffix).inspect} (derived from key #{key.inspect}) already used by config option #{existing.key.inspect}")
+    end
+  end
+
+  # The suffix `env_name` derives from a key (before the lazy `env_prefix`): the
+  # key upper-cased with `.` and `-` folded to `_`.
+  private def self.derived_env_suffix(key : String) : String
+    key.tr(".-", "__").upcase
+  end
+
   # The environment-variable name for *opt*: its explicit `env:` if given, else
-  # `env_prefix` + the upper-cased key. Computed lazily so a prefix set after
+  # `env_prefix` + the derived suffix. Computed lazily so a prefix set after
   # registration still applies.
   def self.env_name(opt : AbstractOption) : String
-    opt.explicit_env || (@@env_prefix + opt.key.tr(".-", "__").upcase)
+    opt.explicit_env || (@@env_prefix + derived_env_suffix(opt.key))
   end
 
   # Register a new option and return a typed handle whose `#value` you can read
@@ -113,13 +139,23 @@ module Superconf
                     parse : Proc(String, T)? = nil,
                     validate : Proc(T, Bool)? = nil) : Option(T) forall T
     ensure_unregistered key
-    the_cli = cli || derive_cli(key)
+    # An *empty* explicit override is treated as no override at all (derive
+    # instead), the same way `nil` is. A blank `env:` would otherwise become the
+    # option's env-var *name* — unusable: `ENV[""]` is never set, `load_env` can
+    # never reach the option, and `dump_env` emits the invalid line
+    # `export ='value'`, breaking the env dump's round-trip. A blank `cli:`
+    # likewise yields an unusable, valueless flag (`OptionParser.on("=VALUE")`).
+    # Folding "" into the derived name keeps the surfaces working and matches the
+    # library's "present-but-empty means unset" philosophy.
+    the_cli = cli.presence || derive_cli(key)
+    the_env = env.presence
     ensure_cli_free the_cli
-    ensure_env_free env
+    ensure_env_free the_env
+    ensure_derived_env_free key if the_env.nil?
     opt = Option(T).new(
       key,
       default,
-      explicit_env: env,
+      explicit_env: the_env,
       cli: the_cli,
       group: group || derive_group(key),
       description: description,
@@ -240,12 +276,16 @@ module Superconf
                           group : String? = nil, description : String? = nil) : AbstractOption
     ensure_unregistered alias_key
     root = resolve self[target_key]
-    the_cli = cli || derive_cli(alias_key)
+    # Treat an empty explicit override as no override (derive instead) — see
+    # `register` for why a blank `env:`/`cli:` would break the alias's surfaces.
+    the_cli = cli.presence || derive_cli(alias_key)
+    the_env = env.presence
     ensure_cli_free the_cli
-    ensure_env_free env
+    ensure_env_free the_env
+    ensure_derived_env_free alias_key if the_env.nil?
     a = root.build_alias(
       alias_key,
-      explicit_env: env,
+      explicit_env: the_env,
       cli: the_cli,
       group: group || derive_group(alias_key),
       description: description || root.description,
@@ -335,15 +375,19 @@ module Superconf
     @@options.each_value do |opt|
       name = env_name(opt)
       # Treat a *present but empty* env var (e.g. `MYAPP_THREADS=`) like an
-      # absent one — a no-op — rather than force-parsing "" into the option.
-      # An empty env var is the shell-conventional "not really set", and
-      # commonly appears unintentionally (an exported-but-unset var, a CI that
-      # injects empty values). Parsing "" into a typed, non-String option
-      # (Int/Float/Bool/Time::Span/Enum) raises, which would abort the whole
-      # `configure!` over a benign empty variable. This mirrors `load_args`,
-      # which deliberately ignores a recognized flag given without its value
-      # for the same reason.
-      if (v = ENV[name]?) && !v.empty?
+      # absent one — a no-op — but only for a typed, non-String option. An empty
+      # env var is the shell-conventional "not really set", and commonly appears
+      # unintentionally (an exported-but-unset var, a CI that injects empty
+      # values). Parsing "" into a typed, non-String option (Int/Float/Bool/
+      # Char/Time::Span/Enum) raises, which would abort the whole `configure!`
+      # over a benign empty variable.
+      #
+      # A *String* option, however, still takes "" as a real value, exactly as
+      # `load_args` does for `--flag=` and `apply_any` does for `key: ""`. Before
+      # this, the three loaders disagreed: a String option could be set to ""
+      # from the command line or a config file but never from the environment,
+      # so `MYAPP_TITLE=` was silently dropped instead of clearing the value.
+      if (v = ENV[name]?) && (!v.empty? || string_valued?(opt))
         opt.set_from_string(v, Source::Env, %(env #{name}="#{v}"))
       end
     end
@@ -517,7 +561,18 @@ module Superconf
       # like a list (`key: "[1,2,3]"`) is a real scalar and still applies.
       return if any.as_a?
       if opt = @@options[prefix]?
-        opt.set_from_string scalar_to_s(any), source, "#{origin} (#{prefix})"
+        s = scalar_to_s(any)
+        # Treat a *present but empty* scalar (`key: ""`) as unset for a typed,
+        # non-String option, exactly as `load_env` and `load_args` do for an
+        # empty env var / `--flag=`. Force-parsing "" into a non-String type
+        # (Int/Float/Bool/Char/Time::Span/Enum) raises, which would abort the
+        # whole config load over one benign empty value — e.g. a templated
+        # config (`threads: "${THREADS}"`) where the variable expanded to
+        # nothing. A `key:` with no value (YAML null) is already skipped above;
+        # this extends the same leniency to an explicit empty string. A String
+        # option still accepts "" as a real value, just as `--flag=` sets "".
+        return if s.empty? && !string_valued?(opt)
+        opt.set_from_string s, source, "#{origin} (#{prefix})"
       end
     end
   end
