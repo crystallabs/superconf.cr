@@ -202,6 +202,21 @@ describe Superconf do
       ENV.delete "T7_N"
     end
 
+    it "treats a present-but-empty env var as unset, instead of crashing" do
+      # A typed (non-String) option whose env var is set but empty (e.g.
+      # `MYAPP_THREADS=`) must not force-parse "" into a crash that aborts the
+      # whole `load_env`/`configure!` — an empty env var is the conventional
+      # "not really set". This mirrors `load_args`'s handling of a value flag
+      # given without its value.
+      Superconf.register "t7b.n", 5
+      ENV["T7B_N"] = ""
+      Superconf.load_env # must not raise
+      Superconf.get("t7b.n", Int32).should eq 5 # default, untouched
+      Superconf["t7b.n"].source.should eq Superconf::Source::Default
+    ensure
+      ENV.delete "T7B_N"
+    end
+
     it "applies CLI flags at CommandLine precedence" do
       Superconf.register "t8.name", "a"
       Superconf.register "t8.on", false

@@ -266,7 +266,16 @@ module Superconf
   def self.load_env
     @@options.each_value do |opt|
       name = env_name(opt)
-      if v = ENV[name]?
+      # Treat a *present but empty* env var (e.g. `MYAPP_THREADS=`) like an
+      # absent one — a no-op — rather than force-parsing "" into the option.
+      # An empty env var is the shell-conventional "not really set", and
+      # commonly appears unintentionally (an exported-but-unset var, a CI that
+      # injects empty values). Parsing "" into a typed, non-String option
+      # (Int/Float/Bool/Time::Span/Enum) raises, which would abort the whole
+      # `configure!` over a benign empty variable. This mirrors `load_args`,
+      # which deliberately ignores a recognized flag given without its value
+      # for the same reason.
+      if (v = ENV[name]?) && !v.empty?
         opt.set_from_string(v, Source::Env, %(env #{name}="#{v}"))
       end
     end
