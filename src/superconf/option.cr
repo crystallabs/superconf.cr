@@ -197,8 +197,16 @@ module Superconf
 
     def emit_json(json : JSON::Builder) : Nil
       v = @value
-      {% if T == Bool || T == Int32 || T == Int64 || T == Float64 %}
+      {% if T == Bool || T == Int32 || T == Int64 %}
         v.to_json json
+      {% elsif T == Float64 %}
+        # JSON has no literal for a non-finite float, and `Float64#to_json` raises
+        # on `Infinity`/`-Infinity`/`NaN` — which would abort the whole dump (such
+        # a value is reachable: `cast` accepts "inf"/"nan" via `String#to_f`). Emit
+        # it as a string so the document stays valid; it still re-loads, since
+        # `String#to_f` parses those words back to the same value. Finite floats
+        # keep emitting as native JSON numbers.
+        v.finite? ? v.to_json(json) : v.to_s.to_json(json)
       {% elsif T == Time::Span %}
         normalize(v.total_seconds).to_json json
       {% else %}

@@ -248,6 +248,15 @@ describe Superconf do
       Superconf.get("t9.beta", Int32).should eq 22
     end
 
+    it "wraps a missing config file in Superconf::Error" do
+      # The class docs promise that rescuing `Superconf::Error` handles every
+      # malformed-config case, a config file included — so an explicitly-named
+      # file that does not exist must not leak a raw `File::NotFoundError`.
+      expect_raises(Superconf::Error, /cannot read config file/) do
+        Superconf.load_file "/nonexistent/superconf-spec-#{Process.pid}.yml"
+      end
+    end
+
     it "wraps a malformed config document in Superconf::Error" do
       # The class docs promise that rescuing `Superconf::Error` handles every
       # malformed-config case, a config file included — so a syntactically
@@ -328,6 +337,22 @@ describe Superconf do
       o.stringify.should_not be_empty            # no OverflowError
       Superconf.to_yaml.should contain "t16"     # dump succeeds too
       JSON.parse(Superconf.to_json)["t16"]["span"].as_f # valid JSON float
+    end
+
+    it "dumps a non-finite Float64 as JSON without crashing, and re-loads it" do
+      # JSON has no literal for Infinity/NaN and `Float64#to_json` raises on one,
+      # which would abort the whole dump. Such a value is reachable: parsing
+      # "inf" yields Infinity. It must be emitted (as a string) and re-load.
+      o = Superconf.register "t17.rate", 1.0
+      o.set_from_string "inf", Superconf::Source::Env, "e"
+      o.value.should eq Float64::INFINITY
+
+      Superconf.to_json # no JSON::Error
+      Superconf.get("t17.rate", Float64).should eq Float64::INFINITY
+
+      # A finite Float64 still emits as a native JSON number.
+      Superconf.register "t17.finite", 2.5
+      JSON.parse(Superconf.to_json)["t17"]["finite"].as_f.should eq 2.5
     end
 
     it "emits a sourceable env script, shell-quoting values" do
