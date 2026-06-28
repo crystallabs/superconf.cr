@@ -515,40 +515,53 @@ module Superconf
     sorted.reject(&.alias_target)
   end
 
-  # Options split into [top-level (no dot)] and [{prefix => options}] for the
-  # grouped YAML/JSON dumps. The nesting key is the *key's* first dotted segment,
-  # not the option's `group`: `leaf_key` strips that same prefix, so a dump nested
-  # this way re-loads back onto the original key. Grouping by `group` instead
-  # would silently break the round-trip whenever a custom `group:` differs from
-  # the key prefix (the reload would target `group.leaf`, not the real key).
-  private def self.grouped_options
+  # A leaf in a grouped dump: an option emitted under its full *key* — either a
+  # top-level (no-dot) option, or a member of a group whose name collides with a
+  # top-level key (see `dump_entries`).
+  private record DumpLeaf, key : String, opt : AbstractOption
+  # A nested group in a grouped dump: *opts* emitted under *name* by `leaf_key`.
+  private record DumpGroup, name : String, opts : Array(AbstractOption)
+
+  # The ordered emit plan shared by the grouped YAML/JSON dumps, so the
+  # top-vs-group decision lives in exactly one place. The nesting key is the
+  # *key's* first dotted segment, not the option's `group`: `leaf_key` strips
+  # that same prefix, so a dump nested this way re-loads back onto the original
+  # key. Grouping by `group` instead would silently break the round-trip
+  # whenever a custom `group:` differs from the key prefix (the reload would
+  # target `group.leaf`, not the real key).
+  #
+  # A group whose name equals a top-level scalar key cannot also be a nested
+  # mapping (that would emit a duplicate mapping key and lose the scalar on
+  # reload), so its members are emitted flat instead — flat dotted keys stay
+  # distinct and `apply_any` re-loads them all the same.
+  private def self.dump_entries : Array(DumpLeaf | DumpGroup)
     o = canonical
-    {o.reject(&.key.includes?('.')), o.select(&.key.includes?('.')).group_by(&.key.split('.', 2).first)}
+    top, dotted = o.partition { |opt| !opt.key.includes?('.') }
+    top_keys = top.map(&.key).to_set
+    entries = Array(DumpLeaf | DumpGroup).new
+    top.each { |opt| entries << DumpLeaf.new(opt.key, opt) }
+    dotted.group_by(&.key.split('.', 2).first).each do |g, gopts|
+      if top_keys.includes?(g)
+        gopts.each { |opt| entries << DumpLeaf.new(opt.key, opt) }
+      else
+        entries << DumpGroup.new(g, gopts)
+      end
+    end
+    entries
   end
 
   private def self.dump_yaml(io : IO) : Nil
-    top, grouped = grouped_options
-    top_keys = top.map(&.key).to_set
     YAML.build(io) do |y|
       y.mapping do
-        top.each do |o|
-          y.scalar o.key
-          o.emit_yaml y
-        end
-        grouped.each do |g, gopts|
-          # A group whose name equals a top-level scalar key cannot also be a
-          # nested mapping (that would emit a duplicate mapping key and lose the
-          # scalar on reload). Emit such a group's members flat instead — flat
-          # dotted keys stay distinct and `apply_any` re-loads them all the same.
-          if top_keys.includes?(g)
-            gopts.each do |o|
-              y.scalar o.key
-              o.emit_yaml y
-            end
-          else
-            y.scalar g
+        dump_entries.each do |e|
+          case e
+          in DumpLeaf
+            y.scalar e.key
+            e.opt.emit_yaml y
+          in DumpGroup
+            y.scalar e.name
             y.mapping do
-              gopts.each do |o|
+              e.opts.each do |o|
                 y.scalar o.leaf_key
                 o.emit_yaml y
               end
@@ -560,22 +573,16 @@ module Superconf
   end
 
   private def self.dump_json(io : IO) : Nil
-    top, grouped = grouped_options
-    top_keys = top.map(&.key).to_set
     JSON.build(io, indent: "  ") do |j|
       j.object do
-        top.each do |o|
-          j.field(o.key) { o.emit_json j }
-        end
-        grouped.each do |g, gopts|
-          # See `dump_yaml`: avoid a duplicate field when a group name collides
-          # with a top-level key by emitting flat dotted keys for that group.
-          if top_keys.includes?(g)
-            gopts.each { |o| j.field(o.key) { o.emit_json j } }
-          else
-            j.field(g) do
+        dump_entries.each do |e|
+          case e
+          in DumpLeaf
+            j.field(e.key) { e.opt.emit_json j }
+          in DumpGroup
+            j.field(e.name) do
               j.object do
-                gopts.each { |o| j.field(o.leaf_key) { o.emit_json j } }
+                e.opts.each { |o| j.field(o.leaf_key) { o.emit_json j } }
               end
             end
           end
