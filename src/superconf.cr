@@ -406,6 +406,14 @@ module Superconf
     else
       return if prefix.empty?
       return if any.raw.nil?
+      # Only a *scalar* is a settable leaf value. A mapping is handled by the
+      # branch above (it recurses); a sequence is the remaining structural
+      # non-scalar — ignore it just like a mapping, instead of letting it fall
+      # through to `scalar_to_s`, which would stringify the array's Crystal
+      # inspect form (e.g. `[1, 2, 3]`) and silently store *that* into a String
+      # option (or raise for a typed one). A quoted scalar that merely *looks*
+      # like a list (`key: "[1,2,3]"`) is a real scalar and still applies.
+      return if any.as_a?
       if opt = @@options[prefix]?
         opt.set_from_string scalar_to_s(any), source, "#{origin} (#{prefix})"
       end
