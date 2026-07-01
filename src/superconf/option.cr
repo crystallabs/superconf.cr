@@ -3,9 +3,8 @@ require "yaml"
 
 # Superconf — a small, framework-agnostic, process-wide configuration registry.
 #
-# Every tunable (in a library or an app) is registered once with `Superconf.option`
-# (or `Superconf.register`), after which it is reachable from four surfaces kept
-# in sync automatically:
+# Every tunable is registered once with `Superconf.option` (or `.register`),
+# then reachable from four surfaces kept in sync automatically:
 #
 # * a **config key**, e.g. `screen.resize_interval`
 # * an **environment variable**, derived as `<PREFIX>SCREEN_RESIZE_INTERVAL`
@@ -13,22 +12,19 @@ require "yaml"
 # * the **runtime value**, via a typed accessor (`Superconf.screen_resize_interval`)
 #   or `Superconf.get`
 #
-# Each effective value also carries a `Source` (and a human-readable `origin`)
-# describing *where it came from*.
+# Each effective value also carries a `Source` and a human-readable `origin`.
 #
-# Because the registry is a single process-wide singleton, several independent
-# components (e.g. a terminal library and the app using it) that all register
-# into it appear together in one combined, dumpable list.
+# The registry is a single process-wide singleton, so independent components
+# (e.g. a terminal library and the app using it) appear together in one
+# combined, dumpable list.
 module Superconf
-  # Raised for any configuration error: an unknown key, a type mismatch, or a
-  # value that can't be parsed for its option. Rescue this one type to handle
-  # all malformed-config cases (e.g. a bad env var or config file).
+  # Raised for any configuration error: unknown key, type mismatch, or
+  # unparseable value. Rescue this one type to handle all malformed-config cases.
   class Error < Exception
   end
 
   # Where an option's current value came from. Ordered by precedence: a higher
-  # member overrides a lower one. So a command-line flag beats an environment
-  # variable, which beats a config file, which beats the built-in default; an
+  # member overrides a lower one (command-line > env > config file > default);
   # explicit runtime assignment always wins.
   enum Source
     Default     # the value passed to `register`
@@ -51,9 +47,9 @@ module Superconf
   # collection. Typed behavior lives in `Option(T)`.
   abstract class AbstractOption
     getter key : String
-    # An explicit env-var name, or `nil` to derive one lazily from the registry
-    # prefix + key (see `Superconf.env_name`). Kept lazy so the prefix can be set
-    # after options are registered (e.g. by the final app, across libraries).
+    # Explicit env-var name, or `nil` to derive one lazily from the registry
+    # prefix + key (see `Superconf.env_name`). Lazy so the prefix can be set
+    # after options are registered (e.g. by the app, across libraries).
     getter explicit_env : String?
     getter cli : String
     getter group : String
@@ -83,8 +79,8 @@ module Superconf
     abstract def emit_json(json : JSON::Builder) : Nil
 
     # The option an *alias* forwards to, or `nil` for a normal option. An alias
-    # (see `Superconf.register_alias`) is an extra name that shares another
-    # option's value, type, default, parsing and validation.
+    # (see `Superconf.register_alias`) shares another option's value, type,
+    # default, parsing and validation.
     def alias_target : AbstractOption?
       nil
     end
@@ -112,13 +108,12 @@ module Superconf
     getter default : T
     getter value : T
 
-    # Change the recorded default (used by `Superconf.set_default`). Does not by
+    # Change the recorded default (used by `Superconf.set_default`). Doesn't
     # itself change the effective `value`; the caller also `set`s at `Default`
-    # precedence so config/env/CLI/runtime still win. The new default is itself
-    # validated: `set` at `Default` precedence is skipped when a higher source
-    # already won, so without this an invalid default could be recorded behind
-    # the override and later surface (e.g. via `default_string`, or if the
-    # higher source is cleared).
+    # precedence so config/env/CLI/runtime still win. Validated here because a
+    # `set` at `Default` precedence is skipped once a higher source has won, so
+    # an invalid default could otherwise slip in unvalidated and later surface
+    # (e.g. via `default_string`, or once the higher source is cleared).
     def default=(value : T)
       check_default value
       @default = value
@@ -135,16 +130,15 @@ module Superconf
     end
 
     # Raise unless *value* passes the option's `validate` predicate (if any).
-    # Guards the recorded default so it always satisfies validation, regardless
-    # of the effective value's precedence.
+    # Guards the recorded default so it satisfies validation regardless of the
+    # effective value's precedence.
     private def check_default(value : T) : Nil
       validate!(value) { "default value #{value.inspect} fails validation for option #{key.inspect}" }
     end
 
-    # Shared core of the default-time and assignment-time validation checks:
-    # raise an `Error` unless *value* passes the option's `validate` predicate
-    # (a no-op when none is set). The message is built by the block, evaluated
-    # lazily so the interpolation cost is paid only on an actual failure.
+    # Shared validation core for default-time and assignment-time checks: raises
+    # `Error` unless *value* passes `validate` (no-op if none set). Message is
+    # built lazily by the block, so interpolation cost is paid only on failure.
     private def validate!(value : T, & : -> String) : Nil
       if v = @validate
         raise Error.new(yield) unless v.call(value)
@@ -163,9 +157,9 @@ module Superconf
     end
 
     def set_from_string(str : String, source : Source, origin : String) : Nil
-      # Skip values that a higher-precedence source already set: don't parse
-      # or validate something we'd discard anyway (so a bad value in a file
-      # that a CLI flag overrides never trips an error).
+      # Skip values a higher-precedence source already set: don't parse or
+      # validate something we'd discard anyway (so a bad value in a file
+      # overridden by a CLI flag never trips an error).
       return if source < @source
       value = begin
         cast str
@@ -188,19 +182,16 @@ module Superconf
     end
 
     # Numeric/bool values are emitted as plain scalars (`0.2`, `true`) so they
-    # re-read with their native YAML types; `cast` converts them back anyway.
-    # Strings and enums are force-quoted: an unquoted value like `yes`, `no`,
-    # `null` or `123` would otherwise be re-parsed by YAML 1.1 as a bool / nil
-    # / int and corrupt the value on reload. `stringify` already normalizes
-    # `Time::Span` to seconds.
+    # re-read with their native YAML types. Strings and enums are force-quoted:
+    # an unquoted `yes`, `no`, `null` or `123` would otherwise be re-parsed by
+    # YAML 1.1 as a bool/nil/int and corrupt the value on reload. `stringify`
+    # already normalizes `Time::Span` to seconds.
     def emit_yaml(yaml : YAML::Builder) : Nil
       {% if T == Float64 %}
-        # A non-finite Float64 (reachable: `cast` accepts "inf"/"nan" via
-        # `String#to_f`) has no plain decimal form. Emitting `Infinity`/`NaN`
-        # would re-read as a *string*, not a float — breaking the "native YAML
-        # types" promise above (mirrors the JSON path, which can't even emit one
-        # natively). YAML's special-float spellings `.inf`/`-.inf`/`.nan` re-read
-        # as native floats. Finite floats keep their plain scalar form.
+        # A non-finite Float64 (reachable via `cast`'s "inf"/"nan" parsing) has no
+        # plain decimal form. Emitting `Infinity`/`NaN` would re-read as a string,
+        # not a float. YAML's special spellings `.inf`/`-.inf`/`.nan` re-read as
+        # native floats; finite floats keep their plain scalar form.
         v = @value
         yaml.scalar(v.finite? ? stringify : (v.nan? ? ".nan" : (v > 0 ? ".inf" : "-.inf")))
       {% elsif T == Bool || T == Int32 || T == Int64 || T == Time::Span %}
@@ -215,12 +206,11 @@ module Superconf
       {% if T == Bool || T == Int32 || T == Int64 %}
         v.to_json json
       {% elsif T == Float64 %}
-        # JSON has no literal for a non-finite float, and `Float64#to_json` raises
-        # on `Infinity`/`-Infinity`/`NaN` — which would abort the whole dump (such
-        # a value is reachable: `cast` accepts "inf"/"nan" via `String#to_f`). Emit
-        # it as a string so the document stays valid; it still re-loads, since
-        # `String#to_f` parses those words back to the same value. Finite floats
-        # keep emitting as native JSON numbers.
+        # JSON has no literal for a non-finite float; `Float64#to_json` raises on
+        # `Infinity`/`-Infinity`/`NaN` (reachable via `cast`'s "inf"/"nan"
+        # parsing), which would abort the dump. Emit as a string instead — still
+        # re-loads since `String#to_f` parses those words back. Finite floats
+        # emit as native JSON numbers.
         v.finite? ? v.to_json(json) : v.to_s.to_json(json)
       {% elsif T == Time::Span %}
         normalize(v.total_seconds).to_json json
@@ -244,9 +234,8 @@ module Superconf
         return p.call(str)
       end
       {% if T == Bool %}
-        # Recognize an explicit truthy/falsey vocabulary and reject anything
-        # else: like every other built-in type, an unparseable value (e.g. a
-        # typo'd `ture`) must raise rather than silently collapse to `false`.
+        # Recognize an explicit truthy/falsey vocabulary; reject anything else
+        # (e.g. a typo'd `ture`) rather than silently collapsing to `false`.
         case str.strip.downcase
         when "1", "true", "yes", "on", "y"
           true
@@ -256,9 +245,8 @@ module Superconf
           raise ArgumentError.new("expected a boolean (true/false, yes/no, on/off, 1/0)")
         end
       {% elsif T == Int32 %}
-        # `prefix: true` also accepts `0x`/`0o`/`0b` (hex/octal/binary) and a
-        # leading sign before the prefix (e.g. `-0x1F`); a plain decimal string
-        # still parses as base 10 (a bare leading `0` is NOT treated as octal).
+        # `prefix: true` also accepts `0x`/`0o`/`0b` and a leading sign before the
+        # prefix (e.g. `-0x1F`); a bare leading `0` is not treated as octal.
         str.strip.to_i prefix: true
       {% elsif T == Int64 %}
         str.strip.to_i64 prefix: true
@@ -267,19 +255,18 @@ module Superconf
       {% elsif T == String %}
         str
       {% elsif T == Char %}
-        # A `Char` is exactly one Unicode codepoint, so a multi-codepoint
-        # grapheme cluster (e.g. a flag emoji) genuinely can't be stored here —
-        # reject it rather than silently truncate to its first codepoint.
+        # A `Char` is exactly one codepoint, so a multi-codepoint grapheme
+        # cluster (e.g. a flag emoji) can't be stored — reject rather than
+        # silently truncate.
         raise ArgumentError.new("expected a single character (one codepoint)") unless str.size == 1
         str[0]
       {% elsif T == Time::Span %}
         parse_time_span str
       {% elsif T < Enum %}
         {% if T.annotation(Flags) %}
-          # Reject input with no recognizable flag (empty, or only separators /
-          # whitespace): like every other built-in type, garbage must raise
-          # rather than silently collapse — here to `None`. An explicit `None`
-          # is still accepted, since it is a real, non-empty token that parses.
+          # Reject input with no recognizable flag (empty, or only separators/
+          # whitespace) rather than silently collapsing to `None`. An explicit
+          # `None` token is still accepted.
           parts = str.split(/[,|]/).map(&.strip).reject(&.empty?)
           raise ArgumentError.new("expected one or more flags (comma- or pipe-separated)") if parts.empty?
           r = T::None
@@ -289,17 +276,14 @@ module Superconf
           T.parse str.strip
         {% end %}
       {% else %}
-        # No built-in parser for this type. A `parse:` proc would have been
-        # used above; reaching here means none was supplied.
+        # No built-in parser for this type and no `parse:` proc was supplied.
         raise "Superconf: no built-in parser for #{self.class}; pass a `parse:` proc to `register`"
       {% end %}
     end
 
-    # Parse a duration string into a `Time::Span`. The numeric part may carry an
-    # optional unit suffix: `ms` (milliseconds), `s` (seconds), `m` (minutes),
-    # `h` (hours) or `d` (days). A bare number with NO suffix means seconds, so
-    # existing configs keep their meaning. Suffixes are case-insensitive and may
-    # be separated from the number by whitespace.
+    # Parse a duration string into a `Time::Span`. Optional unit suffix: `ms`,
+    # `s`, `m`, `h`, `d`. A bare number with no suffix means seconds. Suffixes
+    # are case-insensitive and may be separated from the number by whitespace.
     private def parse_time_span(str : String) : Time::Span
       s = str.strip
       m = s.match(/\A([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s*([a-zA-Z]*)\z/)
@@ -324,13 +308,11 @@ module Superconf
       {% end %}
     end
 
-    # Render a seconds value without a needless trailing ".0" for whole
-    # numbers (so `1.second` dumps as `1`, not `1.0`). A value outside `Int64`'s
-    # range (e.g. `Time::Span::MAX`, whose `total_seconds` rounds up to 2**63) —
-    # or a non-finite one — is left as a `Float64`: `to_i64` would otherwise
-    # raise `OverflowError` and crash every dump/`stringify` path. `2**63` (one
-    # past `Int64::MAX`) is the exact threshold, since `Int64::MAX.to_f` rounds
-    # up to it.
+    # Render a seconds value without a needless trailing ".0" for whole numbers
+    # (so `1.second` dumps as `1`, not `1.0`). A value outside `Int64`'s range
+    # (e.g. `Time::Span::MAX`, whose `total_seconds` rounds up to 2**63) or
+    # non-finite is left as `Float64`, since `to_i64` would raise `OverflowError`.
+    # `2**63` is the exact threshold because `Int64::MAX.to_f` rounds up to it.
     private def normalize(seconds : Float64)
       if seconds.finite? && seconds.abs < 9223372036854775808.0 && seconds == seconds.to_i64
         seconds.to_i64
@@ -340,16 +322,14 @@ module Superconf
     end
   end
 
-  # An *alias*: a second name for an already-registered option, sharing its one
-  # value, type, default, parsing and validation. It carries its own config key,
-  # environment variable and CLI flag, but every read and write forwards to the
-  # target option, so the two names are always in sync.
+  # A second name for an already-registered option, sharing its value, type,
+  # default, parsing and validation. Carries its own config key, environment
+  # variable and CLI flag, but every read/write forwards to the target option.
   #
-  # Created by `Superconf.register_alias` / `Superconf.option_alias` when an app
-  # wants to *promote* a lower-level (library) option under its own name. The
-  # target is always a concrete `Option(T)`: aliases of aliases collapse to the
-  # underlying option (see `Superconf.register_alias`), so there is never a chain
-  # to walk at read time.
+  # Created by `Superconf.register_alias` / `.option_alias` to promote a
+  # lower-level (library) option under an app's own name. The target is always
+  # a concrete `Option(T)`: aliases of aliases collapse to the underlying
+  # option (see `Superconf.register_alias`), so there's never a chain to walk.
   class Alias(T) < AbstractOption
     # The option this alias forwards to.
     getter target : Option(T)
@@ -373,8 +353,8 @@ module Superconf
       @target.set value, source, origin
     end
 
-    # `source`/`origin` mirror the target's, so a dump shows where the shared
-    # value actually came from regardless of which name set it.
+    # Mirrors the target's, so a dump shows where the shared value actually
+    # came from regardless of which name set it.
     def source : Source
       @target.source
     end

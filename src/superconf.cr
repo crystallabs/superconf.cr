@@ -4,9 +4,8 @@ require "./superconf/option"
 # See `Superconf::Option` for the high-level overview. This file holds the
 # process-wide singleton registry and its load/dump machinery.
 #
-# It is framework-agnostic: a terminal library and the app that uses it can both
-# register into the same registry, and every option then appears together in one
-# combined, dumpable list.
+# Framework-agnostic: a terminal library and the app using it can both register
+# into the same registry, so every option appears in one combined, dumpable list.
 module Superconf
   @@options = {} of String => AbstractOption
   @@env_prefix = ""
@@ -62,15 +61,8 @@ module Superconf
   # `log.level` and `log_level` both yield `--log-level`, since `derive_cli`
   # maps both `.` and `_` to `-` — and `load_args` keys its `OptionParser`
   # handlers by flag string, so the second registration would silently overwrite
-  # the first, leaving one option unreachable from the command line (while env
-  # vars and config keys, named independently, would still set both — an
-  # inconsistency). Reject the clash up front, like the duplicate-key guard.
-  #
-  # The same shadowing happens against the built-in flags `--config` and
-  # `--dump-config` that `load_args` always registers: an option deriving (or
-  # given) one of those would be registered first and then overwritten by the
-  # built-in, again leaving it unreachable from the command line. Reject those
-  # too.
+  # the first, leaving one option unreachable from the command line. Also rejects
+  # the built-in flags `--config`/`--dump-config` for the same reason.
   private def self.ensure_cli_free(cli : String) : Nil
     if RESERVED_CLIS.includes?(cli)
       raise ArgumentError.new("CLI flag #{cli.inspect} is reserved by Superconf and cannot be used by a config option")
@@ -79,37 +71,29 @@ module Superconf
   end
 
   # Guard `register`/`register_alias` against two options claiming the same
-  # *explicit* `env:` name. Like a duplicate CLI flag (see `ensure_cli_free`),
-  # two options sharing one environment variable can't be set independently —
-  # `load_env` reads the single variable into both — and `dump_env` emits two
-  # `export FOO=…` lines for it, so sourcing then reloading the env dump silently
-  # collapses both options to one value, breaking the dump→reload round-trip.
+  # *explicit* `env:` name. Two options sharing one environment variable can't be
+  # set independently — `load_env` reads the single variable into both, and
+  # `dump_env` emits two `export FOO=…` lines, breaking the dump→reload
+  # round-trip.
   #
-  # Only *explicit* names are checked here. A *derived* name (prefix + key) can
-  # still collide with another derived one — see `ensure_derived_env_free`, which
-  # catches that case separately. An explicit-vs-derived clash, by contrast,
-  # depends on `env_prefix` (set lazily, possibly after registration), so it
-  # can't be detected reliably; explicit-vs-explicit is prefix-independent and is
-  # the part we can catch cleanly here.
+  # Only *explicit* names are checked here; a *derived* clash is caught
+  # separately by `ensure_derived_env_free`. An explicit-vs-derived clash depends
+  # on `env_prefix` (set lazily, possibly after registration) and can't be
+  # detected reliably, so it's not checked.
   private def self.ensure_env_free(env : String?) : Nil
     return unless env
     reject_clash("environment variable #{env.inspect}") { |o| o.explicit_env == env }
   end
 
-  # Guard two *derived* env names from colliding. Unlike a derived *CLI* clash
-  # (caught by `ensure_cli_free`), a derived env clash is **not** implied by a CLI
-  # clash: `env_name` upper-cases the key (`derived_env_suffix`) while
-  # `derive_cli` preserves case, so two keys differing only in letter case —
-  # e.g. `case.foo` vs `casE.foo` — derive the *same* env var (`CASE_FOO`) but
-  # *different* CLI flags (`--case-foo` vs `--casE-foo`). Left unguarded,
-  # `load_env` would read the one variable into *both* options, and `dump_env`
-  # would emit two `export CASE_FOO=…` lines, so sourcing then reloading the env
-  # dump collapses both options to one value — exactly the dump→reload breakage
-  # `ensure_env_free` prevents for explicit names. The check is
-  # prefix-independent (both derived names share the lazy `env_prefix`), so it
-  # holds regardless of when `env_prefix` is set. Only options that *derive*
-  # their env (no explicit `env:`) are compared; an explicit name sidesteps the
-  # collision and is the documented escape hatch.
+  # Guard two *derived* env names from colliding. Not implied by a CLI clash:
+  # `env_name` upper-cases the key while `derive_cli` preserves case, so two keys
+  # differing only in letter case — e.g. `case.foo` vs `casE.foo` — derive the
+  # *same* env var (`CASE_FOO`) but *different* CLI flags. Left unguarded,
+  # `load_env`/`dump_env` would collapse both options to one value on a
+  # dump→reload round-trip, the same breakage `ensure_env_free` prevents for
+  # explicit names. The check is prefix-independent (both share the lazy
+  # `env_prefix`). Only options that *derive* their env are compared; an
+  # explicit name sidesteps the collision (the documented escape hatch).
   private def self.ensure_derived_env_free(key : String) : Nil
     suffix = derived_env_suffix(key)
     reject_clash("environment variable #{(@@env_prefix + suffix).inspect} (derived from key #{key.inspect})") do |o|
@@ -135,14 +119,11 @@ module Superconf
   # by `register` and `register_alias` so the derive-then-guard sequence lives in
   # one place. Returns the resolved `{cli, env}`.
   #
-  # An *empty* explicit override is treated as no override at all (derive
-  # instead), the same way `nil` is. A blank `env:` would otherwise become the
-  # option's env-var *name* — unusable: `ENV[""]` is never set, `load_env` can
-  # never reach the option, and `dump_env` emits the invalid line
-  # `export ='value'`, breaking the env dump's round-trip. A blank `cli:`
-  # likewise yields an unusable, valueless flag (`OptionParser.on("=VALUE")`).
-  # Folding "" into the derived name keeps the surfaces working and matches the
-  # library's "present-but-empty means unset" philosophy.
+  # An *empty* explicit override is treated as no override (derive instead),
+  # same as `nil`. A blank `env:`/`cli:` would otherwise yield an unusable
+  # surface (`ENV[""]` never set; a valueless `OptionParser.on("=VALUE")` flag),
+  # breaking the env dump's round-trip. Folding "" into the derived name matches
+  # the library's "present-but-empty means unset" philosophy.
   private def self.derive_surfaces(key : String, cli : String?, env : String?) : {String, String?}
     the_cli = cli.presence || derive_cli(key)
     the_env = env.presence
@@ -188,9 +169,9 @@ module Superconf
   # statically-typed accessors `Superconf.<name>` / `Superconf.<name>=`, where
   # `<name>` is the key with dots turned into underscores.
   #
-  # This is the ergonomic front door — `Superconf.screen_resize_interval` returns
-  # the value directly, with no string key or type argument, reading a cached
-  # handle (no hash lookup). Libraries and apps use it by reopening the module:
+  # Ergonomic front door — `Superconf.screen_resize_interval` returns the value
+  # directly, with no string key or type argument, reading a cached handle (no
+  # hash lookup). Libraries and apps use it by reopening the module:
   #
   # ```
   # module Superconf
@@ -205,16 +186,15 @@ module Superconf
   macro option(key, default, *, description = "", env = nil, cli = nil, group = nil, parse = nil, validate = nil)
     {% name = key.split(".").join("_").id %}
     {% const = ("OPT_" + key.split(".").join("_")).id %}
-    # Stored in a constant: a constant infers its type from the generic
-    # `register` return, so no type annotation is needed.
+    # Stored in a constant: infers its type from the generic `register` return,
+    # so no type annotation is needed.
     {{const}} = register({{key}}, {{default}}, env: {{env}}, cli: {{cli}}, group: {{group}}, description: {{description}}, parse: {{parse}}, validate: {{validate}})
 
-    # Constants initialize lazily — only when first referenced in reachable
-    # code. This bare reference (a module-body statement, which *is* eager)
-    # forces the registration to run at load time, so an option is always
-    # registered even if its accessor is referenced only from code paths the
-    # program never runs (otherwise it would vanish from dumps and env/CLI
-    # loading). See the "registers eagerly regardless of use" spec.
+    # Constants initialize lazily, only when first referenced. This bare
+    # reference (a module-body statement, which *is* eager) forces registration
+    # at load time, so the option is registered even if its accessor is never
+    # referenced from code the program runs. See the "registers eagerly
+    # regardless of use" spec.
     {{const}}
 
     # Typed reader.
@@ -242,21 +222,20 @@ module Superconf
   end
 
   # Change the *default* of an already-registered option. Unlike `set` (which
-  # writes at `Source::Runtime` and thus wins over everything), this writes at
+  # writes at `Source::Runtime` and wins over everything), this writes at
   # `Source::Default` precedence, so a config file / env var / CLI flag / runtime
-  # assignment still overrides it. Use it when an application wants a different
-  # baseline than a library's registered default — e.g. crysterm choosing a
-  # different `tput.read_timeout` — while keeping it user-overridable.
+  # assignment still overrides it. Use it when an app wants a different baseline
+  # than a library's registered default — e.g. crysterm choosing a different
+  # `tput.read_timeout` — while keeping it user-overridable.
   #
-  # It also updates the recorded default (so dumps and `default_string` are
-  # consistent). If a higher-precedence source has *already* set the value, the
-  # effective value is left untouched (the override stands); only the recorded
-  # default changes. Call it early (before `configure!`/`load_*`).
+  # Also updates the recorded default (so dumps and `default_string` stay
+  # consistent). If a higher-precedence source already set the value, the
+  # effective value is left untouched; only the recorded default changes. Call
+  # it early (before `configure!`/`load_*`).
   def self.set_default(key : String, value : T) : Nil forall T
     opt = typed(key, T)
-    # `set` validates the value (when it isn't outranked by a higher source);
-    # record the new default only after it succeeds, so a value that fails the
-    # option's validator raises *without* leaving an invalid default behind.
+    # Validate first; record the new default only after it succeeds, so a value
+    # that fails the validator doesn't leave an invalid default behind.
     opt.set value, Source::Default, "default (set by app)"
     opt.default = value
   end
@@ -265,13 +244,11 @@ module Superconf
   # option (*target_key*). The alias shares the target's value, type, default,
   # parsing and validation, and gets its own config key, env var and CLI flag
   # (derived from *alias_key* unless overridden). Reading or writing either name
-  # affects the one shared value — through `get`/`set`, the typed accessor, a
-  # config file, an env var or a CLI flag.
+  # affects the one shared value.
   #
-  # Use it, like `set_default`, when an option declared by a lower level (a
-  # library) is important enough that the application wants to *promote* it under
-  # its own name. The library's name keeps working; the app's name becomes an
-  # equal surface beside it:
+  # Use it, like `set_default`, when an app wants to *promote* a library's option
+  # under its own name. The library's name keeps working; the app's name becomes
+  # an equal surface beside it:
   #
   # ```
   # module Superconf
@@ -308,8 +285,8 @@ module Superconf
   # Declare a *typed alias* of *target*: registers an alias named *key* (see
   # `register_alias`) and defines the typed accessors `Superconf.<name>` /
   # `Superconf.<name>=` of value type *type*, where `<name>` is *key* with dots
-  # turned into underscores. This is the alias counterpart of `option` — the
-  # ergonomic, typed way for an app to promote a lower-level option:
+  # turned into underscores. The alias counterpart of `option` — the ergonomic,
+  # typed way for an app to promote a lower-level option:
   #
   # ```
   # module Superconf
@@ -330,8 +307,8 @@ module Superconf
     {{const}}
 
     # Typed reader of the shared value. Reads the cached alias handle directly
-    # (no hash lookup), just like `option` — the `.as` is a cheap static
-    # downcast, since `register_alias` always yields an `Alias(T)`.
+    # (no hash lookup); `.as` is a cheap static downcast since `register_alias`
+    # always yields an `Alias(T)`.
     def self.{{name}} : {{type}}
       {{const}}.as(Alias({{type}})).value
     end
@@ -359,8 +336,8 @@ module Superconf
   end
 
   # Does *opt* carry a `String` value (directly, or through an alias)? An empty
-  # CLI value is a legitimate value only for a String option; for any other type
-  # parsing "" raises, so `load_args` treats the two cases differently.
+  # value is legitimate only for a String option; parsing "" into any other type
+  # raises, so `load_args` treats the two cases differently.
   private def self.string_valued?(opt : AbstractOption) : Bool
     resolve(opt).is_a?(Option(String))
   end
@@ -385,19 +362,15 @@ module Superconf
   def self.load_env
     @@options.each_value do |opt|
       name = env_name(opt)
-      # Treat a *present but empty* env var (e.g. `MYAPP_THREADS=`) like an
-      # absent one — a no-op — but only for a typed, non-String option. An empty
-      # env var is the shell-conventional "not really set", and commonly appears
-      # unintentionally (an exported-but-unset var, a CI that injects empty
-      # values). Parsing "" into a typed, non-String option (Int/Float/Bool/
-      # Char/Time::Span/Enum) raises, which would abort the whole `configure!`
-      # over a benign empty variable.
+      # Treat a *present but empty* env var (e.g. `MYAPP_THREADS=`) as unset for
+      # a typed, non-String option — empty is the shell-conventional "not really
+      # set" and commonly unintentional (exported-but-unset var, CI injecting
+      # empty values); parsing "" into Int/Float/Bool/Char/Time::Span/Enum raises
+      # and would abort the whole `configure!`.
       #
-      # A *String* option, however, still takes "" as a real value, exactly as
-      # `load_args` does for `--flag=` and `apply_any` does for `key: ""`. Before
-      # this, the three loaders disagreed: a String option could be set to ""
-      # from the command line or a config file but never from the environment,
-      # so `MYAPP_TITLE=` was silently dropped instead of clearing the value.
+      # A *String* option still takes "" as a real value, matching `load_args`'s
+      # `--flag=` and `apply_any`'s `key: ""`, so `MYAPP_TITLE=` clears the value
+      # instead of being silently dropped.
       if (v = ENV[name]?) && (!v.empty? || string_valued?(opt))
         opt.set_from_string(v, Source::Env, %(env #{name}="#{v}"))
       end
@@ -419,11 +392,9 @@ module Superconf
     target = consume ? argv : argv.dup
     parser = OptionParser.new
     # Flags OptionParser reported as given without their required value. The
-    # `missing_option` handler below is a no-op — a recognized flag missing its
-    # value is ignored rather than aborting the program — but OptionParser still
-    # calls the value handler afterwards with an empty string. Parsing "" into a
-    # typed (non-String) option would raise and kill the whole program, so
-    # record the offending flags here and skip them in the handler.
+    # `missing_option` handler below is a no-op, but OptionParser still calls the
+    # value handler afterwards with an empty string, which would raise for a
+    # typed (non-String) option — record offending flags here and skip them.
     missing = Set(String).new
     # Every option's *primary* flag. A bool's auto-generated `--no-` negation is
     # suppressed when it collides with one of these (see below).
@@ -435,18 +406,17 @@ module Superconf
         end
         # Only add a `--no-` negation for a long flag. A short or custom flag
         # with no leading `--` (e.g. `-d`) leaves the string unchanged, so
-        # registering it again would overwrite the positive handler in
-        # OptionParser (handlers are keyed by flag) and make the flag set
-        # `false` — leaving no way to turn the option on.
+        # registering it again would overwrite the positive handler (handlers
+        # are keyed by flag) and make the flag set `false`, with no way to turn
+        # the option on.
         no = opt.cli.sub("--", "--no-")
         # Also suppress it when the negation collides with another option's
         # *primary* flag — e.g. `option "color", true` derives `--no-color`,
-        # which is exactly the primary flag a `no_color` option derives (the
-        # real NO_COLOR convention). Since OptionParser keys handlers by flag,
-        # registering the negation would non-deterministically clobber (per
-        # registration order) the explicit option's handler, so `--no-color`
-        # might flip `color` instead of setting `no_color`. An explicit flag
-        # always wins over a derived negation.
+        # the same flag a `no_color` option derives (the real NO_COLOR
+        # convention). Since handlers are keyed by flag, registering the
+        # negation would clobber the explicit option's handler non-
+        # deterministically. An explicit flag always wins over a derived
+        # negation.
         if no != opt.cli && !primary_clis.includes?(no)
           parser.on(no, "Disable #{opt.key}") do
             opt.set_from_string("false", Source::CommandLine, "command line (#{no})")
@@ -454,19 +424,15 @@ module Superconf
         end
       else
         parser.on("#{opt.cli}=VALUE", opt.description) do |v|
-          # An empty value reaches here in two shapes, both of which would
-          # crash a typed (non-String) option by force-parsing "" into its
-          # type (`"".to_i`, `"".to_f`, an empty enum, etc. all raise):
-          #   * a *missing* value — a trailing `--flag` with nothing after it,
-          #     recorded in `missing` by the `missing_option` handler; and
-          #   * an *explicit* empty assignment — `--flag=` — where the value is
-          #     present but empty, so `missing_option` never fires and the flag
-          #     is absent from `missing`.
-          # Skip both for a non-String option, mirroring `load_env`'s "an empty
-          # value means unset" rule, so one stray empty CLI argument (e.g.
-          # `--workers=$VAR` with `$VAR` unset) can't abort the whole parse. For
-          # a String option an explicit `--flag=` still sets "" — a real value —
-          # while a truly missing value is still skipped.
+          # An empty value reaches here in two shapes, both of which would crash
+          # a typed (non-String) option by force-parsing "" into its type:
+          #   * a *missing* value — trailing `--flag` with nothing after it,
+          #     recorded in `missing` by `missing_option`; and
+          #   * an *explicit* empty assignment — `--flag=` — present but empty,
+          #     so `missing_option` never fires.
+          # Skip both for a non-String option, mirroring `load_env`'s "empty
+          # means unset" rule. For a String option `--flag=` still sets "" — a
+          # real value — while a truly missing value is still skipped.
           next if v.empty? && (missing.includes?(opt.cli) || !string_valued?(opt))
           opt.set_from_string(v, Source::CommandLine, "command line (#{opt.cli})")
         end
@@ -490,11 +456,10 @@ module Superconf
   # group mappings (`screen: {resize_interval: 0.5}`) and/or flat dotted keys
   # (`screen.resize_interval: 0.5`). Unknown keys are ignored.
   def self.load_yaml(input : String | IO, origin : String = "YAML")
-    # Wrap a *syntactically* malformed document in `Error`: the class docs
-    # promise that rescuing `Superconf::Error` handles every malformed-config
-    # case, a config file included, so a raw `YAML::ParseException` must not
-    # leak out. `apply_any`'s own value errors are already `Error`s and pass
-    # through unchanged.
+    # Wrap a *syntactically* malformed document in `Error`: rescuing
+    # `Superconf::Error` must handle every malformed-config case, so a raw
+    # `YAML::ParseException` must not leak out. `apply_any`'s own value errors
+    # are already `Error`s and pass through unchanged.
     doc = begin
       YAML.parse input
     rescue ex : YAML::ParseException
@@ -507,15 +472,11 @@ module Superconf
   # Load a config file by path. JSON is valid YAML, so the same parser handles
   # both `.yml` and `.json`.
   def self.load_file(path : String)
-    # Wrap a filesystem error (missing, unreadable, permission denied) in
-    # `Error`, just as `load_yaml` wraps a parse error: the class docs promise
-    # that rescuing `Superconf::Error` handles every malformed-config case, a
-    # config file included, so a raw error must not leak out of an
-    # explicitly-named file (`--config FILE`, `configure!(file:)`, this call).
+    # Wrap a filesystem error in `Error`, like `load_yaml` wraps a parse error.
     # Rescue `IO::Error`, not just `File::Error`: a missing/unreadable file
     # raises `File::Error` (a subclass), but pointing at a *directory* (e.g.
     # `--config ~/.config/myapp/`) raises a plain `IO::Error` ("Is a directory"),
-    # which `File::Error` would miss — letting it leak.
+    # which `File::Error` would miss.
     content = begin
       File.read(path)
     rescue ex : IO::Error
@@ -563,25 +524,19 @@ module Superconf
     else
       return if prefix.empty?
       return if any.raw.nil?
-      # Only a *scalar* is a settable leaf value. A mapping is handled by the
-      # branch above (it recurses); a sequence is the remaining structural
-      # non-scalar — ignore it just like a mapping, instead of letting it fall
-      # through to `scalar_to_s`, which would stringify the array's Crystal
-      # inspect form (e.g. `[1, 2, 3]`) and silently store *that* into a String
-      # option (or raise for a typed one). A quoted scalar that merely *looks*
-      # like a list (`key: "[1,2,3]"`) is a real scalar and still applies.
+      # Only a *scalar* is a settable leaf value. A mapping is handled above; a
+      # sequence is ignored too, instead of falling through to `scalar_to_s`,
+      # which would stringify the array's Crystal inspect form (e.g.
+      # `[1, 2, 3]`) into a String option (or raise for a typed one). A quoted
+      # scalar that merely *looks* like a list (`key: "[1,2,3]"`) still applies.
       return if any.as_a?
       if opt = @@options[prefix]?
         s = scalar_to_s(any)
         # Treat a *present but empty* scalar (`key: ""`) as unset for a typed,
-        # non-String option, exactly as `load_env` and `load_args` do for an
-        # empty env var / `--flag=`. Force-parsing "" into a non-String type
-        # (Int/Float/Bool/Char/Time::Span/Enum) raises, which would abort the
-        # whole config load over one benign empty value — e.g. a templated
-        # config (`threads: "${THREADS}"`) where the variable expanded to
-        # nothing. A `key:` with no value (YAML null) is already skipped above;
-        # this extends the same leniency to an explicit empty string. A String
-        # option still accepts "" as a real value, just as `--flag=` sets "".
+        # non-String option, as `load_env`/`load_args` do for an empty env var /
+        # `--flag=` — e.g. a templated config (`threads: "${THREADS}"`) where the
+        # variable expanded to nothing. A String option still accepts "" as a
+        # real value.
         return if s.empty? && !string_valued?(opt)
         opt.set_from_string s, source, "#{origin} (#{prefix})"
       end
@@ -661,17 +616,15 @@ module Superconf
   private record DumpGroup, name : String, opts : Array(AbstractOption)
 
   # The ordered emit plan shared by the grouped YAML/JSON dumps, so the
-  # top-vs-group decision lives in exactly one place. The nesting key is the
-  # *key's* first dotted segment, not the option's `group`: `leaf_key` strips
-  # that same prefix, so a dump nested this way re-loads back onto the original
-  # key. Grouping by `group` instead would silently break the round-trip
-  # whenever a custom `group:` differs from the key prefix (the reload would
-  # target `group.leaf`, not the real key).
+  # top-vs-group decision lives in exactly one place. Nesting uses the *key's*
+  # first dotted segment, not the option's `group`: `leaf_key` strips that same
+  # prefix, so a dump nested this way re-loads back onto the original key.
+  # Grouping by `group` would break the round-trip whenever a custom `group:`
+  # differs from the key prefix.
   #
-  # A group whose name equals a top-level scalar key cannot also be a nested
-  # mapping (that would emit a duplicate mapping key and lose the scalar on
-  # reload), so its members are emitted flat instead — flat dotted keys stay
-  # distinct and `apply_any` re-loads them all the same.
+  # A group whose name equals a top-level scalar key can't also be a nested
+  # mapping (duplicate mapping key, losing the scalar on reload), so its members
+  # are emitted flat instead.
   private def self.dump_entries : Array(DumpLeaf | DumpGroup)
     o = canonical
     top, dotted = o.partition { |opt| !opt.key.includes?('.') }
