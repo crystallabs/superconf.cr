@@ -34,6 +34,19 @@ module Superconf
     @@options.has_key? key
   end
 
+  # Whether option *key* carries a non-default value — i.e. some source
+  # (config file, env, CLI, runtime) actually configured it. A value equal to
+  # the default is treated as unconfigured, so library code can safely use
+  # this as "should the configured value override a programmatic one".
+  def self.configured?(key : String) : Bool
+    !self[key].at_default?
+  end
+
+  # Parser for a `String?`-valued option: the built-in casts cover `String`
+  # but not the `String | Nil` union, so such options pass this proc
+  # explicitly. A present value is taken verbatim.
+  ENV_STRING = ->(s : String) { s.as(String?) }
+
   # Guard `register`/`register_alias` against re-using a key.
   private def self.ensure_unregistered(key : String) : Nil
     raise ArgumentError.new("Config option already registered: #{key.inspect}") if @@options.has_key?(key)
