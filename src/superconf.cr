@@ -201,23 +201,23 @@ module Superconf
     {% const = ("OPT_" + key.split(".").join("_")).id %}
     # Stored in a constant: infers its type from the generic `register` return,
     # so no type annotation is needed.
-    {{const}} = register({{key}}, {{default}}, env: {{env}}, cli: {{cli}}, group: {{group}}, description: {{description}}, parse: {{parse}}, validate: {{validate}})
+    {{ const }} = register({{ key }}, {{ default }}, env: {{ env }}, cli: {{ cli }}, group: {{ group }}, description: {{ description }}, parse: {{ parse }}, validate: {{ validate }})
 
     # Constants initialize lazily, only when first referenced. This bare
     # reference (a module-body statement, which *is* eager) forces registration
     # at load time, so the option is registered even if its accessor is never
     # referenced from code the program runs. See the "registers eagerly
     # regardless of use" spec.
-    {{const}}
+    {{ const }}
 
     # Typed reader.
-    def self.{{name}}
-      {{const}}.value
+    def self.{{ name }}
+      {{ const }}.value
     end
 
     # Typed writer at `Source::Runtime`.
-    def self.{{name}}=(value)
-      {{const}}.set value
+    def self.{{ name }}=(value)
+      {{ const }}.set value
     end
   end
 
@@ -315,20 +315,20 @@ module Superconf
   macro option_alias(key, target, type, *, description = nil, env = nil, cli = nil, group = nil)
     {% name = key.split(".").join("_").id %}
     {% const = ("OPT_" + key.split(".").join("_")).id %}
-    {{const}} = register_alias({{key}}, {{target}}, env: {{env}}, cli: {{cli}}, group: {{group}}, description: {{description}})
+    {{ const }} = register_alias({{ key }}, {{ target }}, env: {{ env }}, cli: {{ cli }}, group: {{ group }}, description: {{ description }})
     # Force eager registration (see the `option` macro for why).
-    {{const}}
+    {{ const }}
 
     # Typed reader of the shared value. Reads the cached alias handle directly
     # (no hash lookup); `.as` is a cheap static downcast since `register_alias`
     # always yields an `Alias(T)`.
-    def self.{{name}} : {{type}}
-      {{const}}.as(Alias({{type}})).value
+    def self.{{ name }} : {{ type }}
+      {{ const }}.as(Alias({{ type }})).value
     end
 
     # Typed writer at `Source::Runtime` of the shared value.
-    def self.{{name}}=(value : {{type}})
-      {{const}}.as(Alias({{type}})).set(value)
+    def self.{{ name }}=(value : {{ type }})
+      {{ const }}.as(Alias({{ type }})).set(value)
     end
   end
 
