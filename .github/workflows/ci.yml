@@ -19,4 +19,4 @@ jobs:
       - name: Check formatting
         run: crystal tool format --check
       - name: Lint (ameba)
-        run: ./bin/ameba
+        run: lib/ameba/bin/ameba
