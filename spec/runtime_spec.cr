@@ -1,0 +1,127 @@
+require "./spec_helper"
+
+# The surfaces for a program that changes and saves options while it runs:
+# change notifications, a load at runtime precedence, resets, a dump of a
+# selection of options, and a deferred `--dump-config`.
+
+module Superconf
+  option "rt.count", 4, description: "runtime spec option"
+  option "rt.name", "plain", description: "runtime spec option"
+  option_alias "rt.alias_count", "rt.count", Int32
+end
+
+describe Superconf do
+  describe "#on_change" do
+    it "runs the block after the value changes, from any source" do
+      seen = [] of Int32
+      handle = Superconf.on_change("rt.count") { seen << Superconf.rt_count }
+      Superconf.rt_count = 5
+      Superconf.load_yaml "rt: {count: 6}", "spec", Superconf::Source::Runtime
+      Superconf.load_args ["--rt-count=7"], consume: false # outranked by the runtime value: no change
+      Superconf.rt_count = 7
+      Superconf.rt_count = 7 # the same value: no change
+      seen.should eq [5, 6, 7]
+      Superconf.off_change("rt.count", handle).should be_true
+      Superconf.off_change("rt.count", handle).should be_false
+      Superconf.rt_count = 8
+      seen.should eq [5, 6, 7]
+    ensure
+      Superconf.reset "rt.count"
+    end
+
+    it "reaches a block registered on an alias, and reports a change through either name" do
+      seen = 0
+      handle = Superconf.on_change("rt.alias_count") { seen += 1 }
+      Superconf.rt_count = 9
+      Superconf.rt_alias_count = 10
+      seen.should eq 2
+      Superconf["rt.count"].off_change(handle).should be_true
+    ensure
+      Superconf.reset "rt.count"
+    end
+  end
+
+  describe ".reset" do
+    it "puts the option back to its default, at default precedence, notifying" do
+      seen = [] of Int32
+      handle = Superconf.on_change("rt.count") { seen << Superconf.rt_count }
+      Superconf.rt_count = 11
+      Superconf.reset "rt.count"
+      Superconf.rt_count.should eq 4
+      Superconf["rt.count"].source.should eq Superconf::Source::Default
+      Superconf["rt.count"].origin.should eq "default"
+      Superconf.configured?("rt.count").should be_false
+      seen.should eq [11, 4]
+      Superconf.load_yaml "rt: {count: 12}", "spec" # a file applies again after the reset
+      Superconf.rt_count.should eq 12
+      Superconf.reset "rt.alias_count" # through the alias
+      Superconf.rt_count.should eq 4
+      Superconf.off_change "rt.count", handle
+    ensure
+      Superconf.reset "rt.count"
+    end
+  end
+
+  describe ".load_yaml / .load_file at a source" do
+    it "loads at file precedence by default, below a runtime value" do
+      Superconf.rt_count = 20
+      Superconf.load_yaml "rt: {count: 21}", "spec"
+      Superconf.rt_count.should eq 20
+    ensure
+      Superconf.reset "rt.count"
+    end
+
+    it "loads at runtime precedence when asked, over a runtime value" do
+      Superconf.rt_count = 20
+      path = File.tempname("superconf-runtime", ".yml")
+      File.write path, "rt:\n  count: 22\n  name: \"from file\"\n"
+      Superconf.load_file path, Superconf::Source::Runtime
+      Superconf.rt_count.should eq 22
+      Superconf.rt_name.should eq "from file"
+      Superconf["rt.count"].source.should eq Superconf::Source::Runtime
+      Superconf["rt.count"].origin.should eq "config file #{path} (rt.count)"
+    ensure
+      Superconf.reset "rt.count"
+      Superconf.reset "rt.name"
+      File.delete path if path
+    end
+  end
+
+  describe ".dump with a selection" do
+    it "dumps only the options the block selects, re-loadably" do
+      Superconf.rt_count = 30
+      yaml = Superconf.to_yaml { |opt| opt.key.starts_with?("rt.") && !opt.at_default? }
+      yaml.should eq "---\nrt:\n  count: 30\n"
+      json = Superconf.to_json(&.key.starts_with?("rt."))
+      json.should contain %("count": 30)
+      json.should contain %("name": "plain")
+      json.should_not contain "alias_count" # aliases carry no value of their own
+      Superconf.reset "rt.count"
+      Superconf.load_yaml yaml, "spec"
+      Superconf.rt_count.should eq 30
+      env = String.build { |s| Superconf.dump(s, Superconf::Format::Env) { |opt| opt.key == "rt.count" } }
+      env.should eq "export RT_COUNT='30'\n"
+      pretty = String.build { |s| Superconf.dump(s, Superconf::Format::Pretty) { |opt| opt.key == "rt.count" } }
+      pretty.lines.size.should eq 3
+      report = String.build { |s| Superconf.dump(s, Superconf::Format::Report) { |opt| opt.key.starts_with?("rt.") } }
+      report.should contain %("key": "rt.alias_count") # the report lists aliases
+      nothing = String.build { |s| Superconf.dump(s) { |_| false } }
+      nothing.should eq "--- {}\n"
+    ensure
+      Superconf.reset "rt.count"
+    end
+  end
+
+  describe ".load_args with defer_dump" do
+    it "notes the dump for dump_pending instead of dumping" do
+      Superconf.pending_dump.should be_nil
+      Superconf.load_args ["--dump-config", "json", "--rt-count=40"], consume: false, defer_dump: true
+      Superconf.pending_dump.should eq Superconf::Format::Json
+      Superconf.rt_count.should eq 40 # the other flags still apply
+      Superconf.load_args ["--dump-config"], consume: false, defer_dump: true
+      Superconf.pending_dump.should eq Superconf::Format::Yaml
+    ensure
+      Superconf.reset "rt.count"
+    end
+  end
+end

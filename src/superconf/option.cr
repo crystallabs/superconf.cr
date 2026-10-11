@@ -60,6 +60,38 @@ module Superconf
     def initialize(@key, @explicit_env, @cli, @group, @description)
     end
 
+    # The blocks `#on_change` registered, called after every change of the
+    # value (not of its source alone).
+    @listeners = [] of Proc(Nil)
+
+    # Registers *block* to run whenever the option's value changes — from a
+    # config file, an env var, the command line, a runtime assignment or a
+    # `reset` — so a value read into a UI control, a cache or a derived
+    # setting can follow it. Not called for an assignment that leaves the
+    # value as it was (one a higher-precedence source outranked, or one equal
+    # to the current value). Returns the block, the handle `#off_change`
+    # takes.
+    #
+    # ```
+    # Superconf["app.theme"].on_change { apply_theme Superconf.app_theme }
+    # ```
+    def on_change(&block : ->) : Proc(Nil)
+      @listeners << block
+      block
+    end
+
+    # Unregisters a *block* `#on_change` returned. Returns whether it was
+    # registered.
+    def off_change(block : Proc(Nil)) : Bool
+      !@listeners.delete(block).nil?
+    end
+
+    # Runs the `#on_change` blocks; called by the typed option after its
+    # value changed.
+    protected def notify_change : Nil
+      @listeners.each &.call
+    end
+
     # Current value rendered as the string used across env/CLI/config/dumps.
     abstract def stringify : String
 
@@ -91,6 +123,9 @@ module Superconf
     abstract def build_alias(key : String, *, explicit_env : String?,
                              cli : String, group : String,
                              description : String) : AbstractOption
+
+    # Puts the option back to its registered default (see `Superconf.reset`).
+    abstract def reset : Nil
 
     # Key with its leading `<group>.` stripped, for grouped dumps. A key
     # without a dot is returned unchanged.
@@ -159,9 +194,22 @@ module Superconf
     def set(value : T, source : Source = Source::Runtime, origin : String = "API") : Nil
       return if source < @source
       validate!(value) { "invalid value #{value.inspect} for option #{@key} (#{origin})" }
+      changed = @value != value
       @value = value
       @source = source
       @origin = origin
+      notify_change if changed
+    end
+
+    # Puts the option back to its registered default, at `Source::Default`
+    # precedence, as if nothing had ever configured it (see
+    # `Superconf.reset`).
+    def reset : Nil
+      changed = @value != @default
+      @value = @default
+      @source = Source::Default
+      @origin = "default"
+      notify_change if changed
     end
 
     def set_from_string(str : String, source : Source, origin : String) : Nil
@@ -359,6 +407,22 @@ module Superconf
     # Assign through to the target option (same precedence rules apply).
     def set(value : T, source : Source = Source::Runtime, origin : String = "API") : Nil
       @target.set value, source, origin
+    end
+
+    # Resets the shared value (see `Option#reset`).
+    def reset : Nil
+      @target.reset
+    end
+
+    # Watches the shared value: the block is registered on the target, so a
+    # change through either name reaches it.
+    def on_change(&block : ->) : Proc(Nil)
+      @target.on_change(&block)
+    end
+
+    # :ditto:
+    def off_change(block : Proc(Nil)) : Bool
+      @target.off_change block
     end
 
     # Mirrors the target's, so a dump shows where the shared value actually

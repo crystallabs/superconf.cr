@@ -234,6 +234,25 @@ module Superconf
     typed(key, T).set(value, source, origin)
   end
 
+  # Puts option *key* back to its registered default, at `Source::Default`
+  # precedence, as if no file, variable, flag or assignment had ever set it —
+  # so the next load from any source applies again. For an alias, the shared
+  # value is reset. Raises on an unknown key.
+  def self.reset(key : String) : Nil
+    self[key].reset
+  end
+
+  # Registers *block* to run whenever option *key*'s value changes (see
+  # `AbstractOption#on_change`); returns the handle `off_change` takes.
+  def self.on_change(key : String, &block : ->) : Proc(Nil)
+    self[key].on_change(&block)
+  end
+
+  # Unregisters a *block* `on_change` returned for option *key*.
+  def self.off_change(key : String, block : Proc(Nil)) : Bool
+    self[key].off_change block
+  end
+
   # Change the *default* of an already-registered option. Unlike `set` (which
   # writes at `Source::Runtime` and wins over everything), this writes at
   # `Source::Default` precedence, so a config file / env var / CLI flag / runtime
@@ -401,7 +420,14 @@ module Superconf
   # Unknown options are ignored so an app's own parsing is left intact. By
   # default the real *argv* is consumed (recognized flags removed); pass
   # `consume: false` to parse a copy non-destructively. Returns `self`.
-  def self.load_args(argv : Array(String) = ARGV, *, consume : Bool = true)
+  #
+  # With `defer_dump: true`, a `--dump-config` is noted in `pending_dump`
+  # instead of dumping and exiting on the spot: for a library that reads the
+  # arguments as soon as it loads, before the application has registered its
+  # own options, which would otherwise be missing from the dump. The
+  # application (or the library, at a later point of its own) then calls
+  # `dump_pending` once every option is registered.
+  def self.load_args(argv : Array(String) = ARGV, *, consume : Bool = true, defer_dump : Bool = false)
     target = consume ? argv : argv.dup
     parser = OptionParser.new
     # Flags OptionParser reported as given without their required value. The
@@ -456,8 +482,13 @@ module Superconf
       load_file f
     end
     parser.on("--dump-config [FORMAT]", "Dump configuration (yaml|json|env|pretty|report) and exit") do |fmt|
-      dump STDOUT, parse_format(fmt)
-      exit
+      format = parse_format(fmt)
+      if defer_dump
+        @@pending_dump = format
+      else
+        dump STDOUT, format
+        exit
+      end
     end
     parser.invalid_option { } # leave unknown flags for the app
     parser.missing_option { |flag| missing << flag }
@@ -465,10 +496,31 @@ module Superconf
     self
   end
 
-  # Load a YAML document (string or IO) at `Source::ConfigFile`. Accepts nested
-  # group mappings (`screen: {resize_interval: 0.5}`) and/or flat dotted keys
-  # (`screen.resize_interval: 0.5`). Unknown keys are ignored.
-  def self.load_yaml(input : String | IO, origin : String = "YAML")
+  # The format of a `--dump-config` that `load_args` deferred (`defer_dump:
+  # true`), until `dump_pending` honors it; nil when none is pending.
+  class_getter pending_dump : Format?
+
+  # Performs the dump a `--dump-config` asked for while `load_args` deferred
+  # it — to standard output, then exits — and does nothing when none is
+  # pending. For the point at which every option is registered: an
+  # application's start, or a library's first use of the terminal.
+  def self.dump_pending : Nil
+    return unless format = @@pending_dump
+    @@pending_dump = nil
+    dump STDOUT, format
+    exit
+  end
+
+  # Load a YAML document (string or IO) at *source*, `Source::ConfigFile` by
+  # default. Accepts nested group mappings (`screen: {resize_interval: 0.5}`)
+  # and/or flat dotted keys (`screen.resize_interval: 0.5`). Unknown keys are
+  # ignored.
+  #
+  # Pass `source: Source::Runtime` for a document the user asked to have
+  # applied now — a settings file picked in a dialog — so it also replaces
+  # values an env var, a flag or an earlier assignment set, which a load at
+  # file precedence leaves standing.
+  def self.load_yaml(input : String | IO, origin : String = "YAML", source : Source = Source::ConfigFile)
     # Wrap a *syntactically* malformed document in `Error`: rescuing
     # `Superconf::Error` must handle every malformed-config case, so a raw
     # `YAML::ParseException` must not leak out. `apply_any`'s own value errors
@@ -478,13 +530,13 @@ module Superconf
     rescue ex : YAML::ParseException
       raise Error.new("cannot parse #{origin}: #{ex.message}")
     end
-    apply_any doc, Source::ConfigFile, origin
+    apply_any doc, source, origin
     self
   end
 
-  # Load a config file by path. JSON is valid YAML, so the same parser handles
-  # both `.yml` and `.json`.
-  def self.load_file(path : String)
+  # Load a config file by path, at *source* (see `load_yaml`). JSON is valid
+  # YAML, so the same parser handles both `.yml` and `.json`.
+  def self.load_file(path : String, source : Source = Source::ConfigFile)
     # Wrap a filesystem error in `Error`, like `load_yaml` wraps a parse error.
     # Rescue `IO::Error`, not just `File::Error`: a missing/unreadable file
     # raises `File::Error` (a subclass), but pointing at a *directory* (e.g.
@@ -495,7 +547,7 @@ module Superconf
     rescue ex : IO::Error
       raise Error.new("cannot read config file #{path}: #{ex.message}")
     end
-    load_yaml content, "config file #{path}"
+    load_yaml content, "config file #{path}", source
   end
 
   # The default per-user config path: `$XDG_CONFIG_HOME/<app_name>/config.yml`,
@@ -568,23 +620,45 @@ module Superconf
   # `:pretty` is a human table that also shows each value's source; `:report`
   # is rich JSON with full per-option metadata.
   def self.dump(io : IO = STDOUT, format : Format = Format::Yaml) : Nil
+    dump(io, format) { true }
+  end
+
+  # Dump the options the block selects, in *format* — e.g. only those a
+  # source other than the default set, for a settings file that pins what the
+  # user chose and leaves the rest to follow the defaults:
+  #
+  # ```
+  # Superconf.dump(file) { |opt| !opt.at_default? }
+  # ```
+  def self.dump(io : IO = STDOUT, format : Format = Format::Yaml, & : AbstractOption -> Bool) : Nil
+    selected = sorted.select { |opt| yield opt }
     case format
-    in Format::Yaml   then dump_yaml io
-    in Format::Json   then dump_json io
-    in Format::Env    then dump_env io
-    in Format::Pretty then dump_pretty io
-    in Format::Report then dump_report io
+    in Format::Yaml   then dump_yaml io, canonical(selected)
+    in Format::Json   then dump_json io, canonical(selected)
+    in Format::Env    then dump_env io, canonical(selected)
+    in Format::Pretty then dump_pretty io, canonical(selected)
+    in Format::Report then dump_report io, selected
     end
   end
 
   # The configuration as a re-loadable YAML string.
   def self.to_yaml : String
-    String.build { |s| dump_yaml s }
+    String.build { |s| dump s, Format::Yaml }
+  end
+
+  # The options the block selects as a re-loadable YAML string (see `dump`).
+  def self.to_yaml(& : AbstractOption -> Bool) : String
+    String.build { |s| dump(s, Format::Yaml) { |opt| yield opt } }
   end
 
   # The configuration as a re-loadable JSON string.
   def self.to_json : String
-    String.build { |s| dump_json s }
+    String.build { |s| dump s, Format::Json }
+  end
+
+  # The options the block selects as a re-loadable JSON string (see `dump`).
+  def self.to_json(& : AbstractOption -> Bool) : String
+    String.build { |s| dump(s, Format::Json) { |opt| yield opt } }
   end
 
   private def self.parse_format(str : String?) : Format
@@ -598,8 +672,8 @@ module Superconf
   end
 
   # Emit a sourceable shell script: one `export <ENV>='value'` per option.
-  private def self.dump_env(io : IO) : Nil
-    canonical.each do |o|
+  private def self.dump_env(io : IO, opts : Array(AbstractOption)) : Nil
+    opts.each do |o|
       io << "export " << env_name(o) << '=' << shell_quote(o.stringify) << '\n'
     end
   end
@@ -614,11 +688,12 @@ module Superconf
     @@options.values.sort_by!(&.key)
   end
 
-  # Options that own their value (aliases excluded), for the value-listing dumps
-  # where emitting the same value under two keys would be redundant. The full
-  # set, aliases included, still appears in the `report` dump.
-  private def self.canonical : Array(AbstractOption)
-    sorted.reject(&.alias_target)
+  # Those of *opts* (sorted) that own their value (aliases excluded), for the
+  # value-listing dumps where emitting the same value under two keys would be
+  # redundant. The full set, aliases included, still appears in the `report`
+  # dump.
+  private def self.canonical(opts : Array(AbstractOption) = sorted) : Array(AbstractOption)
+    opts.reject(&.alias_target)
   end
 
   # A leaf in a grouped dump: an option emitted under its full *key* — either a
@@ -638,8 +713,7 @@ module Superconf
   # A group whose name equals a top-level scalar key can't also be a nested
   # mapping (duplicate mapping key, losing the scalar on reload), so its members
   # are emitted flat instead.
-  private def self.dump_entries : Array(DumpLeaf | DumpGroup)
-    o = canonical
+  private def self.dump_entries(o : Array(AbstractOption)) : Array(DumpLeaf | DumpGroup)
     top, dotted = o.partition { |opt| !opt.key.includes?('.') }
     top_keys = top.map(&.key).to_set
     entries = Array(DumpLeaf | DumpGroup).new
@@ -654,10 +728,10 @@ module Superconf
     entries
   end
 
-  private def self.dump_yaml(io : IO) : Nil
+  private def self.dump_yaml(io : IO, opts : Array(AbstractOption)) : Nil
     YAML.build(io) do |y|
       y.mapping do
-        dump_entries.each do |e|
+        dump_entries(opts).each do |e|
           case e
           in DumpLeaf
             y.scalar e.key
@@ -676,10 +750,10 @@ module Superconf
     end
   end
 
-  private def self.dump_json(io : IO) : Nil
+  private def self.dump_json(io : IO, opts : Array(AbstractOption)) : Nil
     JSON.build(io, indent: "  ") do |j|
       j.object do
-        dump_entries.each do |e|
+        dump_entries(opts).each do |e|
           case e
           in DumpLeaf
             j.field(e.key) { e.opt.emit_json j }
@@ -695,8 +769,7 @@ module Superconf
     end
   end
 
-  private def self.dump_pretty(io : IO) : Nil
-    opts = canonical
+  private def self.dump_pretty(io : IO, opts : Array(AbstractOption)) : Nil
     return if opts.empty?
     kw = {opts.max_of(&.key.size), "OPTION".size}.max
     vw = {opts.max_of(&.stringify.size), "VALUE".size}.max
@@ -707,10 +780,10 @@ module Superconf
     end
   end
 
-  private def self.dump_report(io : IO) : Nil
+  private def self.dump_report(io : IO, opts : Array(AbstractOption)) : Nil
     JSON.build(io, indent: "  ") do |j|
       j.array do
-        sorted.each do |o|
+        opts.each do |o|
           j.object do
             j.field "key", o.key
             j.field("value") { o.emit_json j }

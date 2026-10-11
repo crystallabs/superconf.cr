@@ -92,6 +92,31 @@ appear in the `report` dump with an `alias_of` field.
 * `pretty` — an aligned table showing each value's **source**;
 * `report` — rich JSON with full per-option metadata.
 
+## Changing options while the program runs
+
+An option is a live value, not just a parsed setting, so a program can read
+one into a control, let the user change it, and save the result:
+
+* **`Superconf.on_change key { … }`** (or `Superconf[key].on_change`) runs
+  the block after the option's value changes — from a file, an env var, a
+  flag, a runtime assignment or a reset; a block registered on an alias hears
+  changes through either name. `off_change` takes the returned handle back.
+* **`Superconf.reset key`** puts an option back to its registered default, at
+  default precedence, so a later load from any source applies again.
+* **`load_file path, Superconf::Source::Runtime`** (and `load_yaml`'s
+  `source:`) applies a file the user picked *now*, over values an env var, a
+  flag or an earlier assignment set — which a load at the usual file
+  precedence would leave standing.
+* **`Superconf.dump(io, format) { |opt| … }`** (and `to_yaml` / `to_json` with
+  a block) dumps only the options the block selects, re-loadably — e.g.
+  `{ |opt| !opt.at_default? }` for a settings file that pins what the user
+  chose and leaves the rest at the defaults.
+* **`load_args argv, defer_dump: true`** notes a `--dump-config` in
+  `Superconf.pending_dump` instead of dumping and exiting at once, for a
+  library that reads the arguments as it loads, before the application has
+  registered its own options; `Superconf.dump_pending` performs it later, once
+  every option is in.
+
 ## Errors
 
 A single `Superconf::Error` covers unknown keys, type mismatches, unparseable
