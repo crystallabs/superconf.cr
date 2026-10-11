@@ -498,7 +498,7 @@ module Superconf
 
   # The format of a `--dump-config` that `load_args` deferred (`defer_dump:
   # true`), until `dump_pending` honors it; nil when none is pending.
-  class_getter pending_dump : Format?
+  class_property pending_dump : Format?
 
   # Performs the dump a `--dump-config` asked for while `load_args` deferred
   # it — to standard output, then exits — and does nothing when none is
