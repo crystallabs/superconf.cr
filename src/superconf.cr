@@ -34,12 +34,15 @@ module Superconf
     @@options.has_key? key
   end
 
-  # Whether option *key* carries a non-default value — i.e. some source
-  # (config file, env, CLI, runtime) actually configured it. A value equal to
-  # the default is treated as unconfigured, so library code can safely use
-  # this as "should the configured value override a programmatic one".
+  # Whether some source — a config file, an env var, a flag, a runtime
+  # assignment — set option *key*, whatever value it chose: answered by the
+  # option's `source`, not by its value, so a user who pins an option to the
+  # value that happens to be its default is still heard ("should the
+  # configured value override a programmatic one" — yes, they asked for it).
+  # A `set_default` leaves the option unconfigured; a `reset` makes it so
+  # again. The value-based question is `AbstractOption#at_default?`.
   def self.configured?(key : String) : Bool
-    !self[key].at_default?
+    !self[key].source.default?
   end
 
   # Parser for a `String?`-valued option: the built-in casts cover `String`

@@ -138,8 +138,8 @@ module Superconf
 
     # Whether the option still carries its registered default. Compared as the
     # rendered string so it works uniformly for any option type; a value set
-    # equal to the default counts as "at default". The negated question ("was
-    # this configured?") is `Superconf.configured?`.
+    # equal to the default counts as "at default". The question by source
+    # ("did anything set this?") is `Superconf.configured?`.
     def at_default? : Bool
       stringify == default_string
     end

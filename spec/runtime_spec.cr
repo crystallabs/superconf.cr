@@ -128,6 +128,26 @@ describe Superconf do
     end
   end
 
+  describe ".configured?" do
+    it "answers by source: a value set equal to the default counts, a changed default does not" do
+      Superconf.configured?("rt.count").should be_false
+      Superconf.rt_count = 4 # the default, chosen
+      Superconf["rt.count"].at_default?.should be_true
+      Superconf.configured?("rt.count").should be_true
+      Superconf.reset "rt.count"
+      Superconf.configured?("rt.count").should be_false
+      Superconf.set_default "rt.count", 5
+      Superconf.rt_count.should eq 5
+      Superconf.configured?("rt.count").should be_false
+      Superconf.load_yaml "rt: {count: 5}", "spec" # the (new) default, pinned by a file
+      Superconf.configured?("rt.count").should be_true
+      Superconf.configured?("rt.alias_count").should be_true # the shared value's source
+    ensure
+      Superconf.reset "rt.count"
+      Superconf.set_default "rt.count", 4
+    end
+  end
+
   describe ".default_config_path" do
     it "names another application's file in the same place when asked" do
       previous = ENV["XDG_CONFIG_HOME"]?
