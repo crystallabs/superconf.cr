@@ -128,6 +128,21 @@ describe Superconf do
     end
   end
 
+  describe ".default_config_path" do
+    it "names another application's file in the same place when asked" do
+      previous = ENV["XDG_CONFIG_HOME"]?
+      ENV["XDG_CONFIG_HOME"] = "/tmp/xdg"
+      Superconf.default_config_path.should eq "/tmp/xdg/#{Superconf.app_name}/config.yml"
+      Superconf.default_config_path("toolkit").should eq "/tmp/xdg/toolkit/config.yml"
+    ensure
+      if previous
+        ENV["XDG_CONFIG_HOME"] = previous
+      else
+        ENV.delete "XDG_CONFIG_HOME"
+      end
+    end
+  end
+
   describe ".load_args with defer_dump" do
     it "notes the dump for dump_pending instead of dumping" do
       Superconf.pending_dump.should be_nil

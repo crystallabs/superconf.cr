@@ -552,10 +552,12 @@ module Superconf
 
   # The default per-user config path: `$XDG_CONFIG_HOME/<app_name>/config.yml`,
   # or `~/.config/<app_name>/config.yml` when `$XDG_CONFIG_HOME` is unset.
-  def self.default_config_path : String
+  # *app* names another program's file in the same place — for an application
+  # that reads the file of the library it is built on before its own.
+  def self.default_config_path(app : String = @@app_name) : String
     xdg = ENV["XDG_CONFIG_HOME"]?
     base = xdg && !xdg.empty? ? Path[xdg] : Path.home / ".config"
-    (base / @@app_name / "config.yml").to_s
+    (base / app / "config.yml").to_s
   end
 
   # Load `default_config_path` if it exists; a no-op otherwise. Returns `self`.
