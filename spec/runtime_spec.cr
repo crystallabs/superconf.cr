@@ -29,6 +29,22 @@ describe Superconf do
       Superconf.reset "rt.count"
     end
 
+    it "lets a block unregister itself while it runs, without skipping the next" do
+      seen = [] of String
+      first = Proc(Nil).new { }
+      first = Superconf.on_change("rt.count") do
+        seen << "first"
+        Superconf.off_change "rt.count", first
+      end
+      second = Superconf.on_change("rt.count") { seen << "second" }
+      Superconf.rt_count = 13
+      Superconf.rt_count = 14
+      seen.should eq ["first", "second", "second"]
+      Superconf.off_change("rt.count", second).should be_true
+    ensure
+      Superconf.reset "rt.count"
+    end
+
     it "reaches a block registered on an alias, and reports a change through either name" do
       seen = 0
       handle = Superconf.on_change("rt.alias_count") { seen += 1 }
@@ -121,6 +137,7 @@ describe Superconf do
       Superconf.load_args ["--dump-config"], consume: false, defer_dump: true
       Superconf.pending_dump.should eq Superconf::Format::Yaml
     ensure
+      Superconf.pending_dump = nil # left pending, a later `dump_pending` would exit the spec run
       Superconf.reset "rt.count"
     end
   end

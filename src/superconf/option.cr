@@ -87,9 +87,12 @@ module Superconf
     end
 
     # Runs the `#on_change` blocks; called by the typed option after its
-    # value changed.
+    # value changed. Over a snapshot of the list, so a block may `off_change`
+    # itself (a one-shot) or register another without the walk skipping or
+    # repeating one; a change is rare enough for the copy not to matter.
     protected def notify_change : Nil
-      @listeners.each &.call
+      return if @listeners.empty?
+      @listeners.dup.each &.call
     end
 
     # Current value rendered as the string used across env/CLI/config/dumps.
