@@ -148,6 +148,37 @@ describe Superconf do
     end
   end
 
+  describe ".load_args --dump-config FORMAT" do
+    it "takes the next word as the format only when it names one" do
+      argv = ["--dump-config", "notes.md"]
+      Superconf.load_args argv, defer_dump: true
+      argv.should eq ["notes.md"] # the application's, not a format
+      Superconf.pending_dump.should eq Superconf::Format::Yaml
+      Superconf.pending_dump = nil
+      argv = ["--dump-config", "JSON", "notes.md"]
+      Superconf.load_args argv, defer_dump: true
+      argv.should eq ["notes.md"]
+      Superconf.pending_dump.should eq Superconf::Format::Json
+      Superconf.dump_format?("text").should eq Superconf::Format::Pretty
+      Superconf.dump_format?("notes.md").should be_nil
+    ensure
+      Superconf.pending_dump = nil
+    end
+
+    it "refuses a format given with = that names none instead of dumping YAML" do
+      Superconf.pending_dump = nil
+      error = expect_raises(Superconf::Error, /unknown dump format "jsn"/) do
+        Superconf.load_args ["--dump-config=jsn"], consume: false, defer_dump: true
+      end
+      (error.message || "").should contain "yaml|json|env|pretty|report"
+      Superconf.pending_dump.should be_nil
+      Superconf.load_args ["--dump-config=YAML"], consume: false, defer_dump: true
+      Superconf.pending_dump.should eq Superconf::Format::Yaml
+    ensure
+      Superconf.pending_dump = nil
+    end
+  end
+
   describe ".default_config_path" do
     it "names another application's file in the same place when asked" do
       previous = ENV["XDG_CONFIG_HOME"]?

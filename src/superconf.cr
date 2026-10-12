@@ -418,7 +418,9 @@ module Superconf
   #
   # * `--config FILE`        — additionally load a YAML/JSON config file
   # * `--dump-config [FMT]`  — dump configuration (yaml|json|env|pretty|report,
-  #   default yaml) and exit
+  #   default yaml) and exit; the next word is FMT only when it names a
+  #   format (`dump_format?`), so `--dump-config notes.md` dumps YAML and
+  #   leaves `notes.md` to the application
   #
   # Unknown options are ignored so an app's own parsing is left intact. By
   # default the real *argv* is consumed (recognized flags removed); pass
@@ -432,6 +434,7 @@ module Superconf
   # `dump_pending` once every option is registered.
   def self.load_args(argv : Array(String) = ARGV, *, consume : Bool = true, defer_dump : Bool = false)
     target = consume ? argv : argv.dup
+    dump_flag_alone target
     parser = OptionParser.new
     # Flags OptionParser reported as given without their required value. The
     # `missing_option` handler below is a no-op, but OptionParser still calls the
@@ -497,6 +500,20 @@ module Superconf
     parser.missing_option { |flag| missing << flag }
     parser.parse target
     self
+  end
+
+  # Spells a bare `--dump-config` in *argv* as `--dump-config=yaml` where the
+  # word after it names no format (`dump_format?`): `OptionParser` takes that
+  # word as the flag's optional FORMAT whatever it is, so the flag is made to
+  # stand alone and the word stays for the application. Nothing from `--` on
+  # is touched.
+  private def self.dump_flag_alone(argv : Array(String)) : Nil
+    argv.each_with_index do |arg, i|
+      break if arg == "--"
+      next unless arg == "--dump-config"
+      word = argv[i + 1]?
+      argv[i] = "--dump-config=yaml" unless word && dump_format?(word)
+    end
   end
 
   # The format of a `--dump-config` that `load_args` deferred (`defer_dump:
@@ -666,14 +683,29 @@ module Superconf
     String.build { |s| dump(s, Format::Json) { |opt| yield opt } }
   end
 
-  private def self.parse_format(str : String?) : Format
-    case str.try(&.downcase)
+  # The dump `Format` *word* names, in any case — `yaml`, `json`, `env` (or
+  # `sh`), `pretty` (or `text`), `report` — or nil when it names none. The
+  # word after a bare `--dump-config` is the flag's FORMAT only when this
+  # answers one (see `load_args`); public so that a program which takes the
+  # flag out of `ARGV` itself before its own parser sees the rest (Crysterm's
+  # `strip_toolkit_args`) draws the same line between the format and the
+  # application's next argument.
+  def self.dump_format?(word : String) : Format?
+    case word.downcase
+    when "yaml"           then Format::Yaml
     when "json"           then Format::Json
     when "env", "sh"      then Format::Env
     when "pretty", "text" then Format::Pretty
     when "report"         then Format::Report
-    else                       Format::Yaml
     end
+  end
+
+  # The `--dump-config` FORMAT: YAML when none is given; a value given with
+  # `=` that names no format (`--dump-config=jsn`) is an `Error`, as a value
+  # that fits no option is, rather than a silent YAML dump.
+  private def self.parse_format(str : String?) : Format
+    return Format::Yaml if str.nil? || str.empty?
+    dump_format?(str) || raise Error.new("unknown dump format #{str.inspect} (yaml|json|env|pretty|report)")
   end
 
   # Emit a sourceable shell script: one `export <ENV>='value'` per option.
