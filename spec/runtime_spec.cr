@@ -78,6 +78,26 @@ describe Superconf do
     end
   end
 
+  describe ".parse_yaml / .load_yaml of a parsed document" do
+    it "applies a document parsed once, under the origin given" do
+      document = Superconf.parse_yaml "rt: {count: 31}", "config file x.yml"
+      document["rt"]["count"].as_i.should eq 31
+      Superconf.rt_count.should_not eq 31 # parsing applies nothing
+      Superconf.load_yaml document, "config file x.yml"
+      Superconf.rt_count.should eq 31
+      Superconf["rt.count"].source.should eq Superconf::Source::ConfigFile
+      Superconf["rt.count"].origin.should eq "config file x.yml (rt.count)"
+    ensure
+      Superconf.reset "rt.count"
+    end
+
+    it "raises Error naming the origin for malformed text" do
+      expect_raises(Superconf::Error, /cannot parse config file x.yml/) do
+        Superconf.parse_yaml "rt: {count: [", "config file x.yml"
+      end
+    end
+  end
+
   describe ".load_yaml / .load_file at a source" do
     it "loads at file precedence by default, below a runtime value" do
       Superconf.rt_count = 20

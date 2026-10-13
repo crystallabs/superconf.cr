@@ -541,17 +541,27 @@ module Superconf
   # values an env var, a flag or an earlier assignment set, which a load at
   # file precedence leaves standing.
   def self.load_yaml(input : String | IO, origin : String = "YAML", source : Source = Source::ConfigFile)
+    load_yaml parse_yaml(input, origin), origin, source
+  end
+
+  # Load a document already parsed (`parse_yaml`), as `load_yaml` loads its
+  # text: for a program that also reads the document itself — the file's
+  # own entries, kept to write back — and parses it once.
+  def self.load_yaml(document : YAML::Any, origin : String = "YAML", source : Source = Source::ConfigFile)
+    apply_any document, source, origin
+    self
+  end
+
+  # Parse a YAML document (string or IO) as `load_yaml` does, without
+  # applying it. Malformed text is an `Error` naming *origin*.
+  def self.parse_yaml(input : String | IO, origin : String = "YAML") : YAML::Any
     # Wrap a *syntactically* malformed document in `Error`: rescuing
     # `Superconf::Error` must handle every malformed-config case, so a raw
     # `YAML::ParseException` must not leak out. `apply_any`'s own value errors
     # are already `Error`s and pass through unchanged.
-    doc = begin
-      YAML.parse input
-    rescue ex : YAML::ParseException
-      raise Error.new("cannot parse #{origin}: #{ex.message}")
-    end
-    apply_any doc, source, origin
-    self
+    YAML.parse input
+  rescue ex : YAML::ParseException
+    raise Error.new("cannot parse #{origin}: #{ex.message}")
   end
 
   # Load a config file by path, at *source* (see `load_yaml`). JSON is valid

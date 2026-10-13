@@ -107,6 +107,10 @@ one into a control, let the user change it, and save the result:
   `source:`) applies a file the user picked *now*, over values an env var, a
   flag or an earlier assignment set — which a load at the usual file
   precedence would leave standing.
+* **`parse_yaml text, origin`** parses a document as `load_yaml` would (a
+  malformed one raising `Superconf::Error`) without applying it, and
+  `load_yaml document, origin` applies the parsed `YAML::Any` — for a program
+  that also reads the file's entries itself and parses it once.
 * **`Superconf.dump(io, format) { |opt| … }`** (and `to_yaml` / `to_json` with
   a block) dumps only the options the block selects, re-loadably — e.g.
   `{ |opt| !opt.at_default? }` for a settings file that pins what the user
