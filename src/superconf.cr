@@ -548,20 +548,35 @@ module Superconf
   # text: for a program that also reads the document itself — the file's
   # own entries, kept to write back — and parses it once.
   def self.load_yaml(document : YAML::Any, origin : String = "YAML", source : Source = Source::ConfigFile)
+    check_document document, origin
     apply_any document, source, origin
     self
   end
 
   # Parse a YAML document (string or IO) as `load_yaml` does, without
-  # applying it. Malformed text is an `Error` naming *origin*.
+  # applying it. Malformed text, or a document that is not a mapping of
+  # options (a list, a bare scalar), is an `Error` naming *origin*; an empty
+  # document, a file of comments only, is an empty configuration.
   def self.parse_yaml(input : String | IO, origin : String = "YAML") : YAML::Any
     # Wrap a *syntactically* malformed document in `Error`: rescuing
     # `Superconf::Error` must handle every malformed-config case, so a raw
     # `YAML::ParseException` must not leak out. `apply_any`'s own value errors
     # are already `Error`s and pass through unchanged.
-    YAML.parse input
-  rescue ex : YAML::ParseException
-    raise Error.new("cannot parse #{origin}: #{ex.message}")
+    document = begin
+      YAML.parse input
+    rescue ex : YAML::ParseException
+      raise Error.new("cannot parse #{origin}: #{ex.message}")
+    end
+    check_document document, origin
+    document
+  end
+
+  # Raises an `Error` naming *origin* unless *document* is a mapping or
+  # empty: a top-level list or scalar sets nothing, and a program that
+  # writes the file back would replace it with a mapping.
+  private def self.check_document(document : YAML::Any, origin : String) : Nil
+    return if document.as_h? || document.raw.nil?
+    raise Error.new("cannot load #{origin}: the document is not a mapping of options")
   end
 
   # Load a config file by path, at *source* (see `load_yaml`). JSON is valid
@@ -572,10 +587,12 @@ module Superconf
     # raises `File::Error` (a subclass), but pointing at a *directory* (e.g.
     # `--config ~/.config/myapp/`) raises a plain `IO::Error` ("Is a directory"),
     # which `File::Error` would miss.
+    # The OS error alone follows the path: `File::Error`'s message names the
+    # path again ("Error opening file with mode 'r': 'PATH': …").
     content = begin
       File.read(path)
     rescue ex : IO::Error
-      raise Error.new("cannot read config file #{path}: #{ex.message}")
+      raise Error.new("cannot read config file #{path}: #{ex.os_error.try(&.message) || ex.message}")
     end
     load_yaml content, "config file #{path}", source
   end
@@ -621,6 +638,11 @@ module Superconf
     else
       return if prefix.empty?
       return if any.raw.nil?
+      # A group's name given a value (`screen: 5`) sets none of its options;
+      # say so rather than drop the entry, as a mistyped file would be.
+      if !@@options.has_key?(prefix) && @@options.each_key.any?(&.starts_with?("#{prefix}."))
+        raise Error.new("invalid value for #{prefix.inspect} (#{origin}): a group of options takes a mapping")
+      end
       # Only a *scalar* is a settable leaf value. A mapping is handled above; a
       # sequence is ignored too, instead of falling through to `scalar_to_s`,
       # which would stringify the array's Crystal inspect form (e.g.

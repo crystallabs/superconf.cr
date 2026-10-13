@@ -96,6 +96,40 @@ describe Superconf do
         Superconf.parse_yaml "rt: {count: [", "config file x.yml"
       end
     end
+
+    it "raises Error naming the origin for a document that is not a mapping" do
+      ["- rt.count: 5", "5", "just text"].each do |text|
+        expect_raises(Superconf::Error, /cannot load config file x.yml: the document is not a mapping/) do
+          Superconf.parse_yaml text, "config file x.yml"
+        end
+      end
+      expect_raises(Superconf::Error, /not a mapping/) do
+        Superconf.load_yaml YAML::Any.new([] of YAML::Any), "config file x.yml"
+      end
+    end
+
+    it "takes an empty document as an empty configuration" do
+      Superconf.parse_yaml("# only a comment\n", "config file x.yml").raw.should be_nil
+      Superconf.load_yaml "", "config file x.yml"
+      Superconf.rt_count.should eq 4
+    end
+
+    it "raises Error for a group of options given a value, and takes an empty group" do
+      expect_raises(Superconf::Error, /invalid value for "rt" \(config file x.yml\): a group of options takes a mapping/) do
+        Superconf.load_yaml "rt: 5", "config file x.yml"
+      end
+      expect_raises(Superconf::Error, /a group of options takes a mapping/) do
+        Superconf.load_yaml "rt: [1, 2]", "config file x.yml"
+      end
+      Superconf.load_yaml "rt:\n", "config file x.yml"
+      Superconf.rt_count.should eq 4
+    end
+
+    it "names the path once when the file cannot be read" do
+      path = "/nonexistent/superconf-spec-#{Process.pid}.yml"
+      ex = expect_raises(Superconf::Error) { Superconf.load_file path }
+      ex.message.should eq "cannot read config file #{path}: No such file or directory"
+    end
   end
 
   describe ".load_yaml / .load_file at a source" do
