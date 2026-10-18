@@ -254,7 +254,9 @@ module Superconf
         # native floats; finite floats keep their plain scalar form.
         v = @value
         yaml.scalar(v.finite? ? stringify : (v.nan? ? ".nan" : (v > 0 ? ".inf" : "-.inf")))
-      {% elsif T == Bool || T < Int::Primitive || T == Time::Span %}
+      {% elsif T < Int::Primitive %}
+        yaml.scalar stringify, style: (int64_range? ? YAML::ScalarStyle::ANY : YAML::ScalarStyle::DOUBLE_QUOTED)
+      {% elsif T == Bool || T == Time::Span %}
         yaml.scalar stringify
       {% else %}
         yaml.scalar stringify, style: YAML::ScalarStyle::DOUBLE_QUOTED
@@ -263,8 +265,10 @@ module Superconf
 
     def emit_json(json : JSON::Builder) : Nil
       v = @value
-      {% if T == Bool || T < Int::Primitive %}
+      {% if T == Bool %}
         v.to_json json
+      {% elsif T < Int::Primitive %}
+        int64_range? ? v.to_json(json) : stringify.to_json(json)
       {% elsif T < Float::Primitive %}
         # JSON has no literal for a non-finite float; `Float#to_json` raises on
         # `Infinity`/`-Infinity`/`NaN` (reachable via `cast`'s "inf"/"nan"
@@ -276,6 +280,19 @@ module Superconf
         normalize(v.total_seconds).to_json json
       {% else %}
         stringify.to_json json
+      {% end %}
+    end
+
+    # Whether an integer value fits a YAML or JSON reader's native integer,
+    # an `Int64` (in Crystal's readers, this library's loaders included). A
+    # value beyond that range — a large `UInt64`, an `Int128` — emitted as a
+    # plain number would re-read as a float, or not at all; quoted, it
+    # re-reads as its digits, which `cast` parses.
+    private def int64_range? : Bool
+      {% if T < Int::Primitive %}
+        Int64::MIN <= @value <= Int64::MAX
+      {% else %}
+        true
       {% end %}
     end
 

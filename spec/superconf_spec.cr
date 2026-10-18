@@ -316,6 +316,24 @@ describe Superconf do
       JSON.parse(Superconf.to_json)["t5g"]["rate"].as_s.should eq "Infinity"
     end
 
+    it "round-trips an integer beyond the Int64 range, which the readers take as a float" do
+      o = Superconf.register "t5h.big", 0_u64
+      o.set_from_string UInt64::MAX.to_s, Superconf::Source::Env, "e"
+      yaml = Superconf.to_yaml
+      YAML.parse(yaml)["t5h"]["big"].as_s.should eq UInt64::MAX.to_s # quoted: not a float
+      json = Superconf.to_json
+      JSON.parse(json)["t5h"]["big"].as_s.should eq UInt64::MAX.to_s # and parseable at all
+      o.set 1_u64
+      Superconf.load_yaml yaml, "spec", Superconf::Source::Runtime
+      o.value.should eq UInt64::MAX
+      o.set 1_u64
+      Superconf.load_yaml json, "spec", Superconf::Source::Runtime
+      o.value.should eq UInt64::MAX
+      o.set 7_u64 # a value in range still dumps as a native number
+      YAML.parse(Superconf.to_yaml)["t5h"]["big"].as_i.should eq 7
+      JSON.parse(Superconf.to_json)["t5h"]["big"].as_i.should eq 7
+    end
+
     it "uses a custom parse proc when provided" do
       Superconf.register "t6.point", {0, 0},
         parse: ->(s : String) {
