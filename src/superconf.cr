@@ -370,11 +370,27 @@ module Superconf
     opt
   end
 
-  # Does *opt* carry a `String` value (directly, or through an alias)? An empty
-  # value is legitimate only for a String option; parsing "" into any other type
-  # raises, so `load_args` treats the two cases differently.
+  # Does *opt* carry a `String` (or `String?`, see `ENV_STRING`) value,
+  # directly or through an alias? An empty value is legitimate only for such
+  # an option; parsing "" into any other type raises, so `apply_string`
+  # treats the two cases differently.
   private def self.string_valued?(opt : AbstractOption) : Bool
-    resolve(opt).is_a?(Option(String))
+    root = resolve(opt)
+    root.is_a?(Option(String)) || root.is_a?(Option(String?))
+  end
+
+  # Sets *opt* from *str*, as every loader does: a *present but empty* value
+  # is taken as unset for a typed, non-String option — an empty env var
+  # (`MYAPP_THREADS=`), an empty flag value (`--threads=`), an empty scalar
+  # (`threads: ""`, say a templated config whose variable expanded to
+  # nothing) are the shell-conventional "not really set", commonly
+  # unintentional, and parsing "" into Int/Float/Bool/Char/Time::Span/Enum
+  # raises, which would abort the whole `configure!`. A String option still
+  # takes "" as a real value, so `MYAPP_TITLE=` clears the title instead of
+  # being silently dropped.
+  private def self.apply_string(opt : AbstractOption, str : String, source : Source, origin : String) : Nil
+    return if str.empty? && !string_valued?(opt)
+    opt.set_from_string str, source, origin
   end
 
   # Iterate every option, ordered by key.
@@ -397,17 +413,8 @@ module Superconf
   def self.load_env
     @@options.each_value do |opt|
       name = env_name(opt)
-      # Treat a *present but empty* env var (e.g. `MYAPP_THREADS=`) as unset for
-      # a typed, non-String option — empty is the shell-conventional "not really
-      # set" and commonly unintentional (exported-but-unset var, CI injecting
-      # empty values); parsing "" into Int/Float/Bool/Char/Time::Span/Enum raises
-      # and would abort the whole `configure!`.
-      #
-      # A *String* option still takes "" as a real value, matching `load_args`'s
-      # `--flag=` and `apply_any`'s `key: ""`, so `MYAPP_TITLE=` clears the value
-      # instead of being silently dropped.
-      if (v = ENV[name]?) && (!v.empty? || string_valued?(opt))
-        opt.set_from_string(v, Source::Env, %(env #{name}="#{v}"))
+      if v = ENV[name]?
+        apply_string opt, v, Source::Env, %(env #{name}="#{v}")
       end
     end
     self
@@ -469,17 +476,13 @@ module Superconf
         end
       else
         parser.on("#{opt.cli}=VALUE", opt.description) do |v|
-          # An empty value reaches here in two shapes, both of which would crash
-          # a typed (non-String) option by force-parsing "" into its type:
-          #   * a *missing* value — trailing `--flag` with nothing after it,
-          #     recorded in `missing` by `missing_option`; and
-          #   * an *explicit* empty assignment — `--flag=` — present but empty,
-          #     so `missing_option` never fires.
-          # Skip both for a non-String option, mirroring `load_env`'s "empty
-          # means unset" rule. For a String option `--flag=` still sets "" — a
-          # real value — while a truly missing value is still skipped.
-          next if v.empty? && (missing.includes?(opt.cli) || !string_valued?(opt))
-          opt.set_from_string(v, Source::CommandLine, "command line (#{opt.cli})")
+          # A *missing* value — a trailing `--flag` with nothing after it,
+          # recorded in `missing` by `missing_option` — is skipped for every
+          # option; an *explicit* empty assignment, `--flag=`, is present but
+          # empty, so `missing_option` never fires, and `apply_string` takes
+          # it as unset for a typed option and as "" for a String one.
+          next if v.empty? && missing.includes?(opt.cli)
+          apply_string opt, v, Source::CommandLine, "command line (#{opt.cli})"
         end
       end
     end
@@ -656,14 +659,7 @@ module Superconf
       # scalar that merely *looks* like a list (`key: "[1,2,3]"`) still applies.
       return if any.as_a?
       if opt = @@options[prefix]?
-        s = scalar_to_s(any)
-        # Treat a *present but empty* scalar (`key: ""`) as unset for a typed,
-        # non-String option, as `load_env`/`load_args` do for an empty env var /
-        # `--flag=` — e.g. a templated config (`threads: "${THREADS}"`) where the
-        # variable expanded to nothing. A String option still accepts "" as a
-        # real value.
-        return if s.empty? && !string_valued?(opt)
-        opt.set_from_string s, source, "#{origin} (#{prefix})"
+        apply_string opt, scalar_to_s(any), source, "#{origin} (#{prefix})"
       end
     end
   end

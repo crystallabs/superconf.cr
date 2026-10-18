@@ -375,6 +375,23 @@ describe Superconf do
       ENV.delete "T7C_TITLE"
     end
 
+    it "sets a String? option (ENV_STRING) to \"\" from an empty value, like a String one" do
+      # `ENV_STRING` exists for a `String?` option; a present value is taken
+      # verbatim, the empty one included, from every loader.
+      Superconf.register "t7d.title", "orig".as(String?), parse: Superconf::ENV_STRING
+      ENV["T7D_TITLE"] = ""
+      Superconf.load_env
+      Superconf.get("t7d.title", String?).should eq ""
+      Superconf.reset "t7d.title"
+      Superconf.load_args ["--t7d-title="], consume: false
+      Superconf.get("t7d.title", String?).should eq ""
+      Superconf.reset "t7d.title"
+      Superconf.load_yaml %(t7d.title: ""), "spec", Superconf::Source::Runtime
+      Superconf.get("t7d.title", String?).should eq ""
+    ensure
+      ENV.delete "T7D_TITLE"
+    end
+
     it "applies CLI flags at CommandLine precedence" do
       Superconf.register "t8.name", "a"
       Superconf.register "t8.on", false
