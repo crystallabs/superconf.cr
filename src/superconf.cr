@@ -200,8 +200,16 @@ module Superconf
   #
   # Accepts the same options as `register`, including `parse:` and `validate:`.
   macro option(key, default, *, description = "", env = nil, cli = nil, group = nil, parse = nil, validate = nil)
-    {% name = key.tr(".-", "__").id %}
-    {% const = ("OPT_" + key.tr(".-", "__")).id %}
+    {% name = key.tr(".-", "__") %}
+    {% const = ("OPT_" + name).id %}
+    # An option keyed `app_name`, `reset` or `dump` would replace the
+    # registry's own method, or half of a property (the typed `app_name=`
+    # setter would still win over the macro's reader): a compile-time error
+    # rather than a surprise at run time.
+    {% if @type.class.has_method?(name) || @type.class.has_method?(name + "=") %}
+      {% raise "option key #{key.id} would define Superconf.#{name.id}, which the registry already has: use register, or another key" %}
+    {% end %}
+    {% name = name.id %}
     # Stored in a constant: infers its type from the generic `register` return,
     # so no type annotation is needed.
     {{ const }} = register({{ key }}, {{ default }}, env: {{ env }}, cli: {{ cli }}, group: {{ group }}, description: {{ description }}, parse: {{ parse }}, validate: {{ validate }})
@@ -335,8 +343,16 @@ module Superconf
   # *type* is the target option's value type. The target must already be
   # registered when this runs (declare the library's `option` first).
   macro option_alias(key, target, type, *, description = nil, env = nil, cli = nil, group = nil)
-    {% name = key.tr(".-", "__").id %}
-    {% const = ("OPT_" + key.tr(".-", "__")).id %}
+    {% name = key.tr(".-", "__") %}
+    {% const = ("OPT_" + name).id %}
+    # An option keyed `app_name`, `reset` or `dump` would replace the
+    # registry's own method, or half of a property (the typed `app_name=`
+    # setter would still win over the macro's reader): a compile-time error
+    # rather than a surprise at run time.
+    {% if @type.class.has_method?(name) || @type.class.has_method?(name + "=") %}
+      {% raise "option key #{key.id} would define Superconf.#{name.id}, which the registry already has: use register, or another key" %}
+    {% end %}
+    {% name = name.id %}
     {{ const }} = register_alias({{ key }}, {{ target }}, env: {{ env }}, cli: {{ cli }}, group: {{ group }}, description: {{ description }})
     # Force eager registration (see the `option` macro for why).
     {{ const }}
