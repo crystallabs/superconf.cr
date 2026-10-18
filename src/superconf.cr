@@ -566,7 +566,8 @@ module Superconf
   # values an env var, a flag or an earlier assignment set, which a load at
   # file precedence leaves standing.
   def self.load_yaml(input : String | IO, origin : String = "YAML", source : Source = Source::ConfigFile)
-    load_yaml parse_yaml(input, origin), origin, source
+    apply_any parse_yaml(input, origin), source, origin
+    self
   end
 
   # Load a document already parsed (`parse_yaml`), as `load_yaml` loads its
@@ -718,7 +719,7 @@ module Superconf
 
   # The configuration as a re-loadable YAML string.
   def self.to_yaml : String
-    String.build { |s| dump s, Format::Yaml }
+    to_yaml { true }
   end
 
   # The options the block selects as a re-loadable YAML string (see `dump`).
@@ -728,7 +729,7 @@ module Superconf
 
   # The configuration as a re-loadable JSON string.
   def self.to_json : String
-    String.build { |s| dump s, Format::Json }
+    to_json { true }
   end
 
   # The options the block selects as a re-loadable JSON string (see `dump`).

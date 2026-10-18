@@ -198,21 +198,23 @@ module Superconf
     def set(value : T, source : Source = Source::Runtime, origin : String = "API") : Nil
       return if source < @source
       validate!(value) { "invalid value #{value.inspect} for option #{@key} (#{origin})" }
-      changed = @value != value
-      @value = value
-      @source = source
-      @origin = origin
-      notify_change if changed
+      assign value, source, origin
     end
 
     # Puts the option back to its registered default, at `Source::Default`
     # precedence, as if nothing had ever configured it (see
     # `Superconf.reset`).
     def reset : Nil
-      changed = @value != @default
-      @value = @default
-      @source = Source::Default
-      @origin = "default"
+      assign @default, Source::Default, "default"
+    end
+
+    # Records *value* as coming from *source*, and tells the `on_change`
+    # blocks when it differs from the value before.
+    private def assign(value : T, source : Source, origin : String) : Nil
+      changed = @value != value
+      @value = value
+      @source = source
+      @origin = origin
       notify_change if changed
     end
 
