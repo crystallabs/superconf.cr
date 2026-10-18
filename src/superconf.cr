@@ -183,7 +183,7 @@ module Superconf
   # Declare a *typed* option: registers it (so it gets an env var, CLI flag,
   # config key, source tracking, and a line in every dump) **and** defines
   # statically-typed accessors `Superconf.<name>` / `Superconf.<name>=`, where
-  # `<name>` is the key with dots turned into underscores.
+  # `<name>` is the key with dots and dashes turned into underscores.
   #
   # Ergonomic front door — `Superconf.screen_resize_interval` returns the value
   # directly, with no string key or type argument, reading a cached handle (no
@@ -200,8 +200,8 @@ module Superconf
   #
   # Accepts the same options as `register`, including `parse:` and `validate:`.
   macro option(key, default, *, description = "", env = nil, cli = nil, group = nil, parse = nil, validate = nil)
-    {% name = key.split(".").join("_").id %}
-    {% const = ("OPT_" + key.split(".").join("_")).id %}
+    {% name = key.tr(".-", "__").id %}
+    {% const = ("OPT_" + key.tr(".-", "__")).id %}
     # Stored in a constant: infers its type from the generic `register` return,
     # so no type annotation is needed.
     {{ const }} = register({{ key }}, {{ default }}, env: {{ env }}, cli: {{ cli }}, group: {{ group }}, description: {{ description }}, parse: {{ parse }}, validate: {{ validate }})
@@ -320,7 +320,7 @@ module Superconf
   # Declare a *typed alias* of *target*: registers an alias named *key* (see
   # `register_alias`) and defines the typed accessors `Superconf.<name>` /
   # `Superconf.<name>=` of value type *type*, where `<name>` is *key* with dots
-  # turned into underscores. The alias counterpart of `option` — the ergonomic,
+  # and dashes turned into underscores. The alias counterpart of `option` — the ergonomic,
   # typed way for an app to promote a lower-level option:
   #
   # ```
@@ -335,8 +335,8 @@ module Superconf
   # *type* is the target option's value type. The target must already be
   # registered when this runs (declare the library's `option` first).
   macro option_alias(key, target, type, *, description = nil, env = nil, cli = nil, group = nil)
-    {% name = key.split(".").join("_").id %}
-    {% const = ("OPT_" + key.split(".").join("_")).id %}
+    {% name = key.tr(".-", "__").id %}
+    {% const = ("OPT_" + key.tr(".-", "__")).id %}
     {{ const }} = register_alias({{ key }}, {{ target }}, env: {{ env }}, cli: {{ cli }}, group: {{ group }}, description: {{ description }})
     # Force eager registration (see the `option` macro for why).
     {{ const }}

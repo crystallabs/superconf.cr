@@ -17,6 +17,11 @@ module Superconf
   # A library option the app promotes under its own typed name.
   option "lib.resize_interval", 0.2.seconds, description: "library option"
   option_alias "myapp.refresh", "lib.resize_interval", Time::Span
+
+  # A dash in a key, which `register` takes, folds into the accessor's name
+  # as a dot does.
+  option "dashed-key.max-width", 80
+  option_alias "my-app.width", "dashed-key.max-width", Int32
 end
 
 describe Superconf do
@@ -141,6 +146,16 @@ describe Superconf do
       Superconf["app.threads"].source.should eq Superconf::Source::Runtime
     ensure
       Superconf.app_threads = 4
+    end
+
+    it "names the accessor of a key with dashes" do
+      Superconf.dashed_key_max_width.should eq 80
+      Superconf.my_app_width = 100
+      Superconf.dashed_key_max_width.should eq 100
+      Superconf["dashed-key.max-width"].cli.should eq "--dashed-key-max-width"
+      Superconf.env_name(Superconf["my-app.width"]).should eq "MY_APP_WIDTH"
+    ensure
+      Superconf.reset "dashed-key.max-width"
     end
 
     it "registers eagerly regardless of use" do
