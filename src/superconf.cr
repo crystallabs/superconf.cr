@@ -487,8 +487,17 @@ module Superconf
       next if f.empty? # `--config` with no path: nothing to load (see `missing`)
       load_file f
     end
+    # The format a `--dump-config` asked for. Only noted here: the dump runs
+    # once the whole of *argv* is parsed, so the flags after it on the command
+    # line, and a `--config FILE` given anywhere, are in it.
+    requested = nil.as(Format?)
     parser.on("--dump-config [FORMAT]", "Dump configuration (yaml|json|env|pretty|report) and exit") do |fmt|
-      format = parse_format(fmt)
+      requested = parse_format(fmt)
+    end
+    parser.invalid_option { } # leave unknown flags for the app
+    parser.missing_option { |flag| missing << flag }
+    parser.parse target
+    if format = requested
       if defer_dump
         @@pending_dump = format
       else
@@ -496,9 +505,6 @@ module Superconf
         exit
       end
     end
-    parser.invalid_option { } # leave unknown flags for the app
-    parser.missing_option { |flag| missing << flag }
-    parser.parse target
     self
   end
 
