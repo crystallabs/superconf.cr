@@ -292,6 +292,30 @@ describe Superconf do
       end
     end
 
+    it "parses and dumps every primitive integer and float type" do
+      port = Superconf.register "t5g.port", 80_u16
+      byte = Superconf.register "t5g.byte", 0_i8
+      rate = Superconf.register "t5g.rate", 1.0_f32
+      port.set_from_string "0x1F90", Superconf::Source::Env, "e"
+      port.value.should eq 8080_u16
+      byte.set_from_string "-5", Superconf::Source::Env, "e"
+      byte.value.should eq -5_i8
+      rate.set_from_string "2.5", Superconf::Source::Env, "e"
+      rate.value.should eq 2.5_f32
+      expect_raises(Superconf::Error, /cannot parse "300"/) do # out of range
+        byte.set_from_string "300", Superconf::Source::Env, "e"
+      end
+      y = YAML.parse(Superconf.to_yaml)["t5g"]
+      y["port"].as_i.should eq 8080
+      y["rate"].as_f.should eq 2.5
+      j = JSON.parse(Superconf.to_json)["t5g"]
+      j["byte"].as_i.should eq -5
+      j["rate"].as_f.should eq 2.5
+      rate.set_from_string "inf", Superconf::Source::Env, "e"
+      YAML.parse(Superconf.to_yaml)["t5g"]["rate"].as_f.should eq Float64::INFINITY
+      JSON.parse(Superconf.to_json)["t5g"]["rate"].as_s.should eq "Infinity"
+    end
+
     it "uses a custom parse proc when provided" do
       Superconf.register "t6.point", {0, 0},
         parse: ->(s : String) {

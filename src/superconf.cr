@@ -154,8 +154,8 @@ module Superconf
   #
   # *cli* and *group* are derived from *key* unless given; *env* defaults to a
   # lazily-derived name (see `env_name`). For value types beyond the built-ins
-  # (`Bool`/`Int*`/`Float64`/`String`/`Char`/`Time::Span`/`Enum`) pass a *parse*
-  # proc. *validate* is an optional predicate run against every effective value
+  # (`Bool`, the primitive `Int`/`Float` types, `String`, `Char`, `Time::Span`,
+  # `Enum`) pass a *parse* proc. *validate* is an optional predicate run against every effective value
   # (and against *default*); a false result raises `Superconf::Error`.
   #
   # Registering a key that already exists raises — keys are unique.

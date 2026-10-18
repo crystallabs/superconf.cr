@@ -147,9 +147,10 @@ module Superconf
 
   # One registered, typed configuration option.
   #
-  # `T` may be `Bool`, `Int32`, `Int64`, `Float64`, `String`, `Char`,
-  # `Time::Span`, or any `Enum` (including `@[Flags]` enums). Any other type is
-  # supported by passing an explicit `parse:` proc to `register`.
+  # `T` may be `Bool`, any primitive integer or float type (`Int32`, `UInt8`,
+  # `Float64`, ...), `String`, `Char`, `Time::Span`, or any `Enum` (including
+  # `@[Flags]` enums). Any other type is supported by passing an explicit
+  # `parse:` proc to `register`.
   class Option(T) < AbstractOption
     getter default : T
     getter value : T
@@ -246,14 +247,14 @@ module Superconf
     # YAML 1.1 as a bool/nil/int and corrupt the value on reload. `stringify`
     # already normalizes `Time::Span` to seconds.
     def emit_yaml(yaml : YAML::Builder) : Nil
-      {% if T == Float64 %}
-        # A non-finite Float64 (reachable via `cast`'s "inf"/"nan" parsing) has no
+      {% if T < Float::Primitive %}
+        # A non-finite float (reachable via `cast`'s "inf"/"nan" parsing) has no
         # plain decimal form. Emitting `Infinity`/`NaN` would re-read as a string,
         # not a float. YAML's special spellings `.inf`/`-.inf`/`.nan` re-read as
         # native floats; finite floats keep their plain scalar form.
         v = @value
         yaml.scalar(v.finite? ? stringify : (v.nan? ? ".nan" : (v > 0 ? ".inf" : "-.inf")))
-      {% elsif T == Bool || T == Int32 || T == Int64 || T == Time::Span %}
+      {% elsif T == Bool || T < Int::Primitive || T == Time::Span %}
         yaml.scalar stringify
       {% else %}
         yaml.scalar stringify, style: YAML::ScalarStyle::DOUBLE_QUOTED
@@ -262,10 +263,10 @@ module Superconf
 
     def emit_json(json : JSON::Builder) : Nil
       v = @value
-      {% if T == Bool || T == Int32 || T == Int64 %}
+      {% if T == Bool || T < Int::Primitive %}
         v.to_json json
-      {% elsif T == Float64 %}
-        # JSON has no literal for a non-finite float; `Float64#to_json` raises on
+      {% elsif T < Float::Primitive %}
+        # JSON has no literal for a non-finite float; `Float#to_json` raises on
         # `Infinity`/`-Infinity`/`NaN` (reachable via `cast`'s "inf"/"nan"
         # parsing), which would abort the dump. Emit as a string instead — still
         # re-loads since `String#to_f` parses those words back. Finite floats
@@ -303,14 +304,12 @@ module Superconf
         else
           raise ArgumentError.new("expected a boolean (true/false, yes/no, on/off, 1/0)")
         end
-      {% elsif T == Int32 %}
+      {% elsif T < Int::Primitive %}
         # `prefix: true` also accepts `0x`/`0o`/`0b` and a leading sign before the
         # prefix (e.g. `-0x1F`); a bare leading `0` is not treated as octal.
-        str.strip.to_i prefix: true
-      {% elsif T == Int64 %}
-        str.strip.to_i64 prefix: true
-      {% elsif T == Float64 %}
-        str.strip.to_f
+        T.new str.strip, prefix: true
+      {% elsif T < Float::Primitive %}
+        T.new str.strip
       {% elsif T == String %}
         str
       {% elsif T == Char %}

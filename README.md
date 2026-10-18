@@ -43,8 +43,9 @@ runtime assignment**.
 ## Declaring options
 
 `option key, default, …` infers the value type from `default`. Built-in parsing
-covers `Bool`, `Int32`, `Int64`, `Float64`, `String`, `Char`, `Time::Span`, and
-any `Enum` (including `@[Flags]`). For other types pass a `parse:` proc. Add a
+covers `Bool`, every primitive integer and float type (`Int32`, `UInt16`,
+`Float64`, …), `String`, `Char`, `Time::Span`, and any `Enum` (including
+`@[Flags]`). For other types pass a `parse:` proc. Add a
 `validate:` predicate to reject out-of-range values from any source.
 
 `register` is the same thing without the typed accessor (for keys known only at
