@@ -640,6 +640,9 @@ module Superconf
   private def self.apply_any(any : YAML::Any, source : Source, origin : String, prefix : String = "") : Nil
     if h = any.as_h?
       h.each do |k, v|
+        # A null key (`~: ...`) names nothing: skipped, rather than folded
+        # into "" and its children taken for top-level entries.
+        next if k.raw.nil?
         name = k.as_s? || k.raw.to_s
         key = prefix.empty? ? name : "#{prefix}.#{name}"
         apply_any v, source, origin, key
@@ -805,13 +808,13 @@ module Superconf
         dump_entries(opts).each do |e|
           case e
           in DumpLeaf
-            y.scalar e.key
+            yaml_key y, e.key
             e.opt.emit_yaml y
           in DumpGroup
-            y.scalar e.name
+            yaml_key y, e.name
             y.mapping do
               e.opts.each do |o|
-                y.scalar o.leaf_key
+                yaml_key y, o.leaf_key
                 o.emit_yaml y
               end
             end
@@ -823,6 +826,16 @@ module Superconf
 
   # Each JSON dump ends in a newline, as the YAML and env dumps do, so a
   # `--dump-config json` leaves the terminal's prompt on a line of its own.
+  # Emits *key* as a mapping key: plain where YAML reads it back as the same
+  # string, quoted where it would read as something else — `on`, `no`,
+  # `null`, `010`, `1e3`, a date — and the entry would reload under another
+  # name, or none. (Values of string type are always quoted; see
+  # `Option#emit_yaml`.)
+  private def self.yaml_key(y : YAML::Builder, key : String) : Nil
+    plain = YAML::Schema::Core.parse_scalar(key) == key
+    y.scalar key, style: (plain ? YAML::ScalarStyle::ANY : YAML::ScalarStyle::DOUBLE_QUOTED)
+  end
+
   private def self.dump_json(io : IO, opts : Array(AbstractOption)) : Nil
     json_document(io) do |j|
       j.object do

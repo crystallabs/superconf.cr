@@ -600,6 +600,24 @@ describe Superconf do
       end
     end
 
+    it "round-trips keys that YAML would read as a bool, null, number or date" do
+      keys = ["mouse.on", "off.x", "no", "null.x", "ui.010", "ui.1e3", "when.2024-01-01", "x.true"]
+      opts = keys.map { |k| Superconf.register k, 1 }
+      opts.each(&.set(7))
+      yaml = Superconf.to_yaml { |o| keys.includes?(o.key) }
+      parsed = YAML.parse(yaml)
+      parsed["no"].as_i.should eq 7 # a string key, not `false`
+      parsed["null"]["x"].as_i.should eq 7
+      parsed["ui"]["010"].as_i.should eq 7
+      opts.each(&.set(1))
+      Superconf.load_yaml yaml, "dump", Superconf::Source::Runtime
+      opts.map(&.value).should eq [7] * keys.size
+      yaml.should contain "mouse:\n" # an unambiguous key stays plain
+      # A null key in a file names nothing; its entries are not top-level ones.
+      Superconf.load_yaml "~:\n  no: 8\n", "spec", Superconf::Source::Runtime
+      Superconf.get("no", Int32).should eq 7
+    end
+
     it "produces valid JSON, newline-terminated like the other dumps" do
       Superconf.register "t12.a", 1
       JSON.parse(Superconf.to_json)["t12"]["a"].as_i.should eq 1
