@@ -582,9 +582,11 @@ describe Superconf do
       end
     end
 
-    it "produces valid JSON" do
+    it "produces valid JSON, newline-terminated like the other dumps" do
       Superconf.register "t12.a", 1
       JSON.parse(Superconf.to_json)["t12"]["a"].as_i.should eq 1
+      Superconf.to_json.should end_with "}\n"
+      String.build { |s| Superconf.dump s, Superconf::Format::Report }.should end_with "]\n"
     end
 
     it "round-trips an option whose custom group differs from its key prefix" do

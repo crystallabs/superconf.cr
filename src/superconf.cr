@@ -821,8 +821,10 @@ module Superconf
     end
   end
 
+  # Each JSON dump ends in a newline, as the YAML and env dumps do, so a
+  # `--dump-config json` leaves the terminal's prompt on a line of its own.
   private def self.dump_json(io : IO, opts : Array(AbstractOption)) : Nil
-    JSON.build(io, indent: "  ") do |j|
+    json_document(io) do |j|
       j.object do
         dump_entries(opts).each do |e|
           case e
@@ -840,6 +842,12 @@ module Superconf
     end
   end
 
+  # Builds a two-space-indented JSON document on *io*, newline-terminated.
+  private def self.json_document(io : IO, & : JSON::Builder ->) : Nil
+    JSON.build(io, indent: "  ") { |j| yield j }
+    io << '\n'
+  end
+
   private def self.dump_pretty(io : IO, opts : Array(AbstractOption)) : Nil
     return if opts.empty?
     kw = {opts.max_of(&.key.size), "OPTION".size}.max
@@ -852,7 +860,7 @@ module Superconf
   end
 
   private def self.dump_report(io : IO, opts : Array(AbstractOption)) : Nil
-    JSON.build(io, indent: "  ") do |j|
+    json_document(io) do |j|
       j.array do
         opts.each do |o|
           j.object do
