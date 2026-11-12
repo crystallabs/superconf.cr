@@ -40,6 +40,7 @@ describe Superconf do
       Superconf.rt_count = 13
       Superconf.rt_count = 14
       seen.should eq ["first", "second", "second"]
+      Superconf.off_change("rt.count", first).should be_false
       Superconf.off_change("rt.count", second).should be_true
     ensure
       Superconf.reset "rt.count"
