@@ -8,6 +8,13 @@ require "./superconf/option"
 # into the same registry, so every option appears in one combined, dumpable list.
 module Superconf
   @@options = {} of String => AbstractOption
+  # The key of the option that claimed each CLI flag, each explicit `env:`
+  # name and each derived env suffix: what the collision guards of
+  # `register`/`register_alias` look up, so that a registration costs the
+  # same however many options came before it.
+  @@cli_owner = {} of String => String
+  @@env_owner = {} of String => String
+  @@derived_env_owner = {} of String => String
   @@env_prefix = ""
   @@app_name = "app"
 
@@ -61,14 +68,19 @@ module Superconf
   # `ensure_cli_free`.
   RESERVED_CLIS = {"--config", "--dump-config"}
 
-  # Raise an `ArgumentError` naming the offending option if any already-registered
-  # option matches the given predicate. This is the shared find-and-raise body of
-  # the `ensure_*_free` collision guards below, which differ only in *label* (the
-  # surface being claimed) and in the predicate that detects the clash; the raised
-  # message always ends "… already used by config option <key>".
-  private def self.reject_clash(label : String, & : AbstractOption -> Bool) : Nil
-    if existing = @@options.each_value.find { |o| yield o }
-      raise ArgumentError.new("#{label} already used by config option #{existing.key.inspect}")
+  # Raise the collision guards' `ArgumentError` when *owner*, the key of an
+  # option that already claimed the surface *label* names, is set.
+  private def self.reject_clash(label : String, owner : String?) : Nil
+    raise ArgumentError.new("#{label} already used by config option #{owner.inspect}") if owner
+  end
+
+  # Guard `register`/`register_alias` against a key that cannot be written
+  # back: an empty key, or one with an empty dotted segment (`.a`, `a..b`,
+  # `a.`), nests under an empty mapping key in the grouped dumps, which a
+  # reload cannot tell from the top level.
+  private def self.ensure_key_valid(key : String) : Nil
+    if key.empty? || key.starts_with?('.') || key.ends_with?('.') || key.includes?("..")
+      raise ArgumentError.new("invalid config option key #{key.inspect}: empty, or with an empty dotted segment")
     end
   end
 
@@ -83,7 +95,7 @@ module Superconf
     if RESERVED_CLIS.includes?(cli)
       raise ArgumentError.new("CLI flag #{cli.inspect} is reserved by Superconf and cannot be used by a config option")
     end
-    reject_clash("CLI flag #{cli.inspect}") { |o| o.cli == cli }
+    reject_clash "CLI flag #{cli.inspect}", @@cli_owner[cli]?
   end
 
   # Guard `register`/`register_alias` against two options claiming the same
@@ -98,7 +110,7 @@ module Superconf
   # detected reliably, so it's not checked.
   private def self.ensure_env_free(env : String?) : Nil
     return unless env
-    reject_clash("environment variable #{env.inspect}") { |o| o.explicit_env == env }
+    reject_clash "environment variable #{env.inspect}", @@env_owner[env]?
   end
 
   # Guard two *derived* env names from colliding. Not implied by a CLI clash:
@@ -112,8 +124,20 @@ module Superconf
   # explicit name sidesteps the collision (the documented escape hatch).
   private def self.ensure_derived_env_free(key : String) : Nil
     suffix = derived_env_suffix(key)
-    reject_clash("environment variable #{(@@env_prefix + suffix).inspect} (derived from key #{key.inspect})") do |o|
-      o.explicit_env.nil? && derived_env_suffix(o.key) == suffix
+    if owner = @@derived_env_owner[suffix]?
+      reject_clash "environment variable #{(@@env_prefix + suffix).inspect} (derived from key #{key.inspect})", owner
+    end
+  end
+
+  # Enter a freshly built option into the registry and record the surfaces
+  # it claims for the collision guards.
+  private def self.add(opt : AbstractOption) : Nil
+    @@options[opt.key] = opt
+    @@cli_owner[opt.cli] = opt.key
+    if env = opt.explicit_env
+      @@env_owner[env] = opt.key
+    else
+      @@derived_env_owner[derived_env_suffix(opt.key)] = opt.key
     end
   end
 
@@ -164,6 +188,7 @@ module Superconf
                     group : String? = nil, description : String = "",
                     parse : Proc(String, T)? = nil,
                     validate : Proc(T, Bool)? = nil) : Option(T) forall T
+    ensure_key_valid key
     ensure_unregistered key
     the_cli, the_env = derive_surfaces(key, cli, env)
     opt = Option(T).new(
@@ -176,7 +201,7 @@ module Superconf
       parse: parse,
       validate: validate,
     )
-    @@options[key] = opt
+    add opt
     opt
   end
 
@@ -242,7 +267,8 @@ module Superconf
   # Dynamic, string-keyed write at `Source::Runtime` (always wins). Raises on
   # type mismatch. Prefer `Superconf.<name> = ...` in normal code.
   def self.set(key : String, value : T, source : Source = Source::Runtime, origin : String = "API") : Nil forall T
-    typed(key, T).set(value, source, origin)
+    opt = resolve self[key]
+    opt.try_set(value, source, origin) || raise type_mismatch(key, opt, T)
   end
 
   # Puts option *key* back to its registered default, at `Source::Default`
@@ -276,11 +302,8 @@ module Superconf
   # effective value is left untouched; only the recorded default changes. Call
   # it early (before `configure!`/`load_*`).
   def self.set_default(key : String, value : T) : Nil forall T
-    opt = typed(key, T)
-    # Validate first; record the new default only after it succeeds, so a value
-    # that fails the validator doesn't leave an invalid default behind.
-    opt.set value, Source::Default, "default (set by app)"
-    opt.default = value
+    opt = resolve self[key]
+    opt.try_set_default(value) || raise type_mismatch(key, opt, T)
   end
 
   # Register an *alias*: a second name (*alias_key*) for an already-registered
@@ -311,6 +334,7 @@ module Superconf
   def self.register_alias(alias_key : String, target_key : String, *,
                           env : String? = nil, cli : String? = nil,
                           group : String? = nil, description : String? = nil) : AbstractOption
+    ensure_key_valid alias_key
     ensure_unregistered alias_key
     root = resolve self[target_key]
     the_cli, the_env = derive_surfaces(alias_key, cli, env)
@@ -321,7 +345,7 @@ module Superconf
       group: group || derive_group(alias_key),
       description: description || root.description,
     )
-    @@options[alias_key] = a
+    add a
     a
   end
 
@@ -353,20 +377,23 @@ module Superconf
       {% raise "option key #{key.id} would define Superconf.#{name.id}, which the registry already has: use register, or another key" %}
     {% end %}
     {% name = name.id %}
-    {{ const }} = register_alias({{ key }}, {{ target }}, env: {{ env }}, cli: {{ cli }}, group: {{ group }}, description: {{ description }})
+    # Typed here, once: a *type* that is not the target's is a
+    # `Superconf::Error` as the program loads, not a cast failure on the
+    # first read.
+    {{ const }} = register_alias({{ key }}, {{ target }}, env: {{ env }}, cli: {{ cli }}, group: {{ group }}, description: {{ description }}).as?(Alias({{ type }})) ||
+      raise Error.new("option_alias #{ {{ key }}.inspect}: target #{ {{ target }}.inspect} is not of type {{ type }}")
     # Force eager registration (see the `option` macro for why).
     {{ const }}
 
     # Typed reader of the shared value. Reads the cached alias handle directly
-    # (no hash lookup); `.as` is a cheap static downcast since `register_alias`
-    # always yields an `Alias(T)`.
+    # (no hash lookup).
     def self.{{ name }} : {{ type }}
-      {{ const }}.as(Alias({{ type }})).value
+      {{ const }}.value
     end
 
     # Typed writer at `Source::Runtime` of the shared value.
     def self.{{ name }}=(value : {{ type }})
-      {{ const }}.as(Alias({{ type }})).set(value)
+      {{ const }}.set(value)
     end
   end
 
@@ -374,8 +401,11 @@ module Superconf
   # aliases to the underlying option, so `get`/`set` work through either name.
   private def self.typed(key : String, type : T.class) : Option(T) forall T
     opt = resolve self[key]
-    opt.as?(Option(T)) ||
-      raise Error.new("config option #{key.inspect} is #{opt.class}, not Option(#{T})")
+    opt.as?(Option(T)) || raise type_mismatch(key, opt, T)
+  end
+
+  private def self.type_mismatch(key : String, opt : AbstractOption, type : T.class) : Error forall T
+    Error.new("config option #{key.inspect} is #{opt.class}, not Option(#{T})")
   end
 
   # Follow an alias chain to the underlying (non-alias) option.
@@ -457,7 +487,26 @@ module Superconf
   # `dump_pending` once every option is registered.
   def self.load_args(argv : Array(String) = ARGV, *, consume : Bool = true, defer_dump : Bool = false)
     target = consume ? argv : argv.dup
-    dump_flag_alone target
+    # Everything from a `--` on is the application's, the `--` included:
+    # `OptionParser` would drop the separator, and the application's own
+    # parser then take the operands after it for flags. Set aside here, put
+    # back once the rest is parsed.
+    operands = (i = target.index("--")) ? target.pop(target.size - i) : nil
+    begin
+      parse_args target, defer_dump
+    ensure
+      target.concat operands if operands
+    end
+    self
+  end
+
+  # Marks the flag `prepare_args` rewrites a bool's `--flag=VALUE` to: a
+  # control character no flag typed on a command line carries.
+  private BOOL_VALUE_MARK = "\u0001"
+
+  # `load_args` over the part of the command line before any `--`.
+  private def self.parse_args(target : Array(String), defer_dump : Bool) : Nil
+    prepare_args target
     parser = OptionParser.new
     # Flags OptionParser reported as given without their required value. The
     # `missing_option` handler below is a no-op, but OptionParser still calls the
@@ -488,6 +537,14 @@ module Superconf
         if no != opt.cli && !primary_clis.includes?(no)
           parser.on(no, "Disable #{opt.key}") do
             opt.set_from_string("false", Source::CommandLine, "command line (#{no})")
+          end
+        end
+        # `--flag=VALUE`, as every other option type takes it (see
+        # `prepare_args`); for a long flag only, as the negation is — a
+        # short flag's handler is keyed by its one letter.
+        if opt.cli.starts_with?("--")
+          parser.on("#{opt.cli}#{BOOL_VALUE_MARK}=VALUE", "") do |v|
+            apply_string opt, v, Source::CommandLine, "command line (#{opt.cli}=#{v})"
           end
         end
       else
@@ -524,20 +581,45 @@ module Superconf
         exit
       end
     end
-    self
   end
 
-  # Spells a bare `--dump-config` in *argv* as `--dump-config=yaml` where the
-  # word after it names no format (`dump_format?`): `OptionParser` takes that
-  # word as the flag's optional FORMAT whatever it is, so the flag is made to
-  # stand alone and the word stays for the application. Nothing from `--` on
-  # is touched.
-  private def self.dump_flag_alone(argv : Array(String)) : Nil
-    argv.each_with_index do |arg, i|
-      break if arg == "--"
-      next unless arg == "--dump-config"
-      word = argv[i + 1]?
-      argv[i] = "--dump-config=yaml" unless word && dump_format?(word)
+  # Respells two forms in *argv* that `OptionParser` reads differently from
+  # what they mean, before it parses them:
+  #
+  # * a bare `--dump-config` becomes `--dump-config=yaml` where the word
+  #   after it names no format (`dump_format?`): `OptionParser` takes that
+  #   word as the flag's optional FORMAT whatever it is, so the flag is made
+  #   to stand alone and the word stays for the application;
+  # * a bool option's `--flag=VALUE` — to `OptionParser` an unknown flag,
+  #   since `--flag` takes no value — is marked (`BOOL_VALUE_MARK`) as the
+  #   value-taking flag `parse_args` registers beside it.
+  #
+  # A word that is the *value* of the flag before it (`--title
+  # --dump-config`) is left as typed.
+  private def self.prepare_args(argv : Array(String)) : Nil
+    takes_value = Set{"--config"}
+    bools = Set(String).new
+    @@options.each_value do |o|
+      if !o.bool?
+        takes_value << o.cli
+      elsif o.cli.starts_with?("--")
+        bools << o.cli
+      end
+    end
+    i = 0
+    while i < argv.size
+      arg = argv[i]
+      if takes_value.includes?(arg)
+        i += 2
+        next
+      end
+      if arg == "--dump-config"
+        word = argv[i + 1]?
+        argv[i] = "--dump-config=yaml" unless word && dump_format?(word)
+      elsif (eq = arg.index('=')) && bools.includes?(arg[0, eq])
+        argv[i] = "#{arg[0, eq]}#{BOOL_VALUE_MARK}#{arg[eq..]}"
+      end
+      i += 1
     end
   end
 
@@ -565,14 +647,92 @@ module Superconf
   # applied now — a settings file picked in a dialog — so it also replaces
   # values an env var, a flag or an earlier assignment set, which a load at
   # file precedence leaves standing.
+  #
+  # Every value reaches its option as the text the document wrote, so a
+  # String option takes `version: 1.10` as "1.10" and an enum takes `mode:
+  # off` — not as the number or the bool YAML would make of the plain scalar.
   def self.load_yaml(input : String | IO, origin : String = "YAML", source : Source = Source::ConfigFile)
-    apply_any parse_yaml(input, origin), source, origin
+    document = yaml_text(origin) do
+      nodes = YAML::Nodes.parse(input).nodes
+      nodes.empty? ? YAML::Any.new(nil) : textual(nodes.first, origin)
+    end
+    check_document document, origin
+    apply_any document, source, origin
     self
+  end
+
+  # The deepest nesting a document is followed to. No configuration is
+  # anywhere near it; an alias that contains itself (`a: &x {b: *x}`) is
+  # endless, and reported instead of followed until the stack runs out.
+  private MAX_DEPTH = 64
+
+  private def self.too_deep(origin : String) : Error
+    Error.new("cannot load #{origin}: nested deeper than #{MAX_DEPTH} levels (an alias that contains itself?)")
+  end
+
+  # *node* as a `YAML::Any` whose scalars are the text the document wrote,
+  # not what YAML resolves a plain scalar to; a plain null (empty, `~`,
+  # `null`) alone is nil, the loaders' "unset". Aliases and `<<` merge keys
+  # are followed, as `YAML.parse` follows them.
+  private def self.textual(node : YAML::Nodes::Node, origin : String, depth : Int32 = 0) : YAML::Any
+    raise too_deep(origin) if depth > MAX_DEPTH
+    case node
+    when YAML::Nodes::Alias
+      target = node.value
+      target ? textual(target, origin, depth + 1) : YAML::Any.new(nil)
+    when YAML::Nodes::Scalar
+      YAML::Any.new(plain_null?(node) ? nil : node.value)
+    when YAML::Nodes::Sequence
+      YAML::Any.new(node.nodes.map { |n| textual(n, origin, depth + 1) })
+    when YAML::Nodes::Mapping
+      textual_mapping node, origin, depth
+    else
+      YAML::Any.new(nil)
+    end
+  end
+
+  # `textual` of a mapping.
+  private def self.textual_mapping(node : YAML::Nodes::Mapping, origin : String, depth : Int32) : YAML::Any
+    hash = {} of YAML::Any => YAML::Any
+    merged = [] of YAML::Any
+    node.each do |k, v|
+      value = textual(v, origin, depth + 1)
+      if k.is_a?(YAML::Nodes::Scalar) && k.style.plain? && k.value == "<<"
+        merged << value
+      else
+        hash[textual(k, origin, depth + 1)] = value
+      end
+    end
+    # A merged mapping (or each of a list of them, the first winning)
+    # supplies the keys the mapping doesn't give itself.
+    merged.each do |m|
+      (m.as_a? || [m]).each do |source|
+        source.as_h?.try &.each { |k, v| hash[k] = v unless hash.has_key?(k) }
+      end
+    end
+    YAML::Any.new(hash)
+  end
+
+  private def self.plain_null?(node : YAML::Nodes::Scalar) : Bool
+    node.style.plain? && node.tag.nil? && node.value.in?("", "~", "null", "Null", "NULL")
+  end
+
+  # Runs the block, a YAML parse, with a malformed document reported as an
+  # `Error` naming *origin*: rescuing `Superconf::Error` must handle every
+  # malformed-config case, so a raw `YAML::ParseException` must not leak out.
+  private def self.yaml_text(origin : String, & : -> YAML::Any) : YAML::Any
+    yield
+  rescue ex : YAML::ParseException
+    raise Error.new("cannot parse #{origin}: #{ex.message}")
   end
 
   # Load a document already parsed (`parse_yaml`), as `load_yaml` loads its
   # text: for a program that also reads the document itself — the file's
   # own entries, kept to write back — and parses it once.
+  #
+  # A parsed document no longer has the text of its plain scalars, only
+  # what YAML resolved them to: `version: 1.10` arrives as the float 1.1,
+  # `mode: off` as false. Quote such a value in the file, or load the text.
   def self.load_yaml(document : YAML::Any, origin : String = "YAML", source : Source = Source::ConfigFile)
     check_document document, origin
     apply_any document, source, origin
@@ -584,15 +744,7 @@ module Superconf
   # options (a list, a bare scalar), is an `Error` naming *origin*; an empty
   # document, a file of comments only, is an empty configuration.
   def self.parse_yaml(input : String | IO, origin : String = "YAML") : YAML::Any
-    # Wrap a *syntactically* malformed document in `Error`: rescuing
-    # `Superconf::Error` must handle every malformed-config case, so a raw
-    # `YAML::ParseException` must not leak out. `apply_any`'s own value errors
-    # are already `Error`s and pass through unchanged.
-    document = begin
-      YAML.parse input
-    rescue ex : YAML::ParseException
-      raise Error.new("cannot parse #{origin}: #{ex.message}")
-    end
+    document = yaml_text(origin) { YAML.parse input }
     check_document document, origin
     document
   end
@@ -654,7 +806,8 @@ module Superconf
     load_args if args
   end
 
-  private def self.apply_any(any : YAML::Any, source : Source, origin : String, prefix : String = "") : Nil
+  private def self.apply_any(any : YAML::Any, source : Source, origin : String, prefix : String = "", depth : Int32 = 0) : Nil
+    raise too_deep(origin) if depth > MAX_DEPTH
     if h = any.as_h?
       h.each do |k, v|
         # A null key (`~: ...`) names nothing: skipped, rather than folded
@@ -662,14 +815,15 @@ module Superconf
         next if k.raw.nil?
         name = k.as_s? || k.raw.to_s
         key = prefix.empty? ? name : "#{prefix}.#{name}"
-        apply_any v, source, origin, key
+        apply_any v, source, origin, key, depth + 1
       end
     else
       return if prefix.empty?
       return if any.raw.nil?
       # A group's name given a value (`screen: 5`) sets none of its options;
       # say so rather than drop the entry, as a mistyped file would be.
-      if !@@options.has_key?(prefix) && @@options.each_key.any?(&.starts_with?("#{prefix}."))
+      opt = @@options[prefix]?
+      if opt.nil? && group?(prefix)
         raise Error.new("invalid value for #{prefix.inspect} (#{origin}): a group of options takes a mapping")
       end
       # Only a *scalar* is a settable leaf value. A mapping is handled above; a
@@ -678,10 +832,15 @@ module Superconf
       # `[1, 2, 3]`) into a String option (or raise for a typed one). A quoted
       # scalar that merely *looks* like a list (`key: "[1,2,3]"`) still applies.
       return if any.as_a?
-      if opt = @@options[prefix]?
-        apply_string opt, scalar_to_s(any), source, "#{origin} (#{prefix})"
-      end
+      apply_string opt, scalar_to_s(any), source, "#{origin} (#{prefix})" if opt
     end
+  end
+
+  # Does *name* prefix registered keys as a group does (`screen` for
+  # `screen.resize_interval`)?
+  private def self.group?(name : String) : Bool
+    prefix = "#{name}."
+    @@options.each_key.any?(&.starts_with?(prefix))
   end
 
   private def self.scalar_to_s(any : YAML::Any) : String
@@ -880,12 +1039,13 @@ module Superconf
 
   private def self.dump_pretty(io : IO, opts : Array(AbstractOption)) : Nil
     return if opts.empty?
+    values = opts.map(&.stringify)
     kw = {opts.max_of(&.key.size), "OPTION".size}.max
-    vw = {opts.max_of(&.stringify.size), "VALUE".size}.max
+    vw = {values.max_of(&.size), "VALUE".size}.max
     io << "OPTION".ljust(kw) << "  " << "VALUE".ljust(vw) << "  SOURCE\n"
     io << "-" * kw << "  " << "-" * vw << "  ------\n"
-    opts.each do |o|
-      io << o.key.ljust(kw) << "  " << o.stringify.ljust(vw) << "  " << o.origin << '\n'
+    opts.each_with_index do |o, i|
+      io << o.key.ljust(kw) << "  " << values[i].ljust(vw) << "  " << o.origin << '\n'
     end
   end
 

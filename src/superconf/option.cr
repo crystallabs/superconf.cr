@@ -130,6 +130,17 @@ module Superconf
     # Puts the option back to its registered default (see `Superconf.reset`).
     abstract def reset : Nil
 
+    # :nodoc:
+    # Typed assignment of a value whose static type is only known at the
+    # call site (`Superconf.set`): applied when *value* is one the option's
+    # type holds — a `String` or `nil` for a `String?` option — and answered
+    # with whether it was.
+    abstract def try_set(value, source : Source, origin : String) : Bool
+
+    # :nodoc:
+    # `Superconf.set_default`'s counterpart of `try_set`.
+    abstract def try_set_default(value) : Bool
+
     # Key with its leading `<group>.` stripped, for grouped dumps. A key
     # without a dot is returned unchanged.
     def leaf_key : String
@@ -143,6 +154,26 @@ module Superconf
     def at_default? : Bool
       stringify == default_string
     end
+  end
+
+  # :nodoc:
+  # Writes *str* as a JSON string a YAML reader takes back unchanged — the
+  # loaders read `.json` with the YAML parser. `JSON::Builder` leaves DEL,
+  # the C1 controls (NEL among them), U+2028/U+2029, the BOM and the
+  # non-characters raw, which YAML folds into a space or refuses outright;
+  # they are written as `\uXXXX` escapes instead.
+  def self.json_string(json : JSON::Builder, str : String) : Nil
+    if str.each_char.any? { |c| yaml_unsafe?(c) }
+      escaped = str.to_json.gsub { |c| yaml_unsafe?(c) ? "\\u%04x" % c.ord : c }
+      json.raw escaped
+    else
+      json.string str
+    end
+  end
+
+  private def self.yaml_unsafe?(c : Char) : Bool
+    o = c.ord
+    (0x7f <= o <= 0x9f) || o == 0x2028 || o == 0x2029 || o == 0xfeff || o == 0xfffe || o == 0xffff
   end
 
   # One registered, typed configuration option.
@@ -201,6 +232,30 @@ module Superconf
       assign value, source, origin
     end
 
+    # :nodoc:
+    def try_set(value, source : Source, origin : String) : Bool
+      return false unless value.is_a?(T)
+      set value, source, origin
+      true
+    end
+
+    # :nodoc:
+    def try_set_default(value) : Bool
+      return false unless value.is_a?(T)
+      # Validate first; record the new default only after it succeeds, so a
+      # value that fails the validator doesn't leave an invalid default behind.
+      set value, Source::Default, "default (set by app)"
+      self.default = value
+      true
+    end
+
+    # A `nil` value and an empty string render alike, but are not the same
+    # setting: a `String?` option set to "" is not at a `nil` default.
+    def at_default? : Bool
+      return false if @value.nil? != @default.nil?
+      super
+    end
+
     # Puts the option back to its registered default, at `Source::Default`
     # precedence, as if nothing had ever configured it (see
     # `Superconf.reset`).
@@ -211,7 +266,12 @@ module Superconf
     # Records *value* as coming from *source*, and tells the `on_change`
     # blocks when it differs from the value before.
     private def assign(value : T, source : Source, origin : String) : Nil
-      changed = @value != value
+      # NaN is unequal to itself; assigning it again is still no change.
+      changed = {% if T < Float::Primitive %}
+                  !(@value == value || (@value.nan? && value.nan?))
+                {% else %}
+                  @value != value
+                {% end %}
       @value = value
       @source = source
       @origin = origin
@@ -261,7 +321,13 @@ module Superconf
       {% elsif T == Bool || T == Time::Span %}
         yaml.scalar stringify
       {% else %}
-        yaml.scalar stringify, style: YAML::ScalarStyle::DOUBLE_QUOTED
+        # A `nil` (a `String?` option) is a YAML null, which the loaders take
+        # as unset — not "", which would reload as an empty string.
+        if @value.nil?
+          yaml.scalar "~"
+        else
+          yaml.scalar stringify, style: YAML::ScalarStyle::DOUBLE_QUOTED
+        end
       {% end %}
     end
 
@@ -270,18 +336,23 @@ module Superconf
       {% if T == Bool %}
         v.to_json json
       {% elsif T < Int::Primitive %}
-        int64_range? ? v.to_json(json) : stringify.to_json(json)
+        int64_range? ? v.to_json(json) : json.string(stringify)
       {% elsif T < Float::Primitive %}
         # JSON has no literal for a non-finite float; `Float#to_json` raises on
         # `Infinity`/`-Infinity`/`NaN` (reachable via `cast`'s "inf"/"nan"
         # parsing), which would abort the dump. Emit as a string instead — still
         # re-loads since `String#to_f` parses those words back. Finite floats
         # emit as native JSON numbers.
-        v.finite? ? v.to_json(json) : v.to_s.to_json(json)
+        v.finite? ? v.to_json(json) : json.string(v.to_s)
       {% elsif T == Time::Span %}
-        normalize(v.total_seconds).to_json json
+        # The exact decimal `render` writes is a JSON number as it stands.
+        json.raw stringify
       {% else %}
-        stringify.to_json json
+        if v.nil?
+          json.null
+        else
+          Superconf.json_string json, stringify
+        end
       {% end %}
     end
 
@@ -326,9 +397,17 @@ module Superconf
       {% elsif T < Int::Primitive %}
         # `prefix: true` also accepts `0x`/`0o`/`0b` and a leading sign before the
         # prefix (e.g. `-0x1F`); a bare leading `0` is not treated as octal.
-        T.new str.strip, prefix: true
+        # `underscore: true` takes the digit grouping YAML allows (`1_000`).
+        T.new str.strip, prefix: true, underscore: true
       {% elsif T < Float::Primitive %}
-        T.new str.strip
+        # YAML's spellings of the non-finite values, which the YAML dump
+        # writes, besides the `inf`/`nan` words `String#to_f` reads.
+        case s = str.strip.downcase
+        when ".inf", "+.inf" then T::INFINITY
+        when "-.inf"         then -T::INFINITY
+        when ".nan"          then T::NAN
+        else                      T.new s
+        end
       {% elsif T == String %}
         str
       {% elsif T == Char %}
@@ -363,39 +442,50 @@ module Superconf
     # are case-insensitive and may be separated from the number by whitespace.
     private def parse_time_span(str : String) : Time::Span
       s = str.strip
-      m = s.match(/\A([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s*([a-zA-Z]*)\z/)
+      m = s.match(/\A([+-]?)(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?\s*([a-zA-Z]*)\z/)
       raise ArgumentError.new(%(expected a duration like "500ms", "2m", "1.5h" or a bare number of seconds)) unless m
-      num = m[1].to_f
-      case m[2].downcase
-      when "", "s" then num.seconds
-      when "ms"    then num.milliseconds
-      when "m"     then num.minutes
-      when "h"     then num.hours
-      when "d"     then num.days
-      else
-        raise ArgumentError.new("unknown time unit #{m[2].inspect} (use ms, s, m, h, d)")
+      unit_ns = case m[4].downcase
+                when "", "s" then 1_000_000_000_i64
+                when "ms"    then 1_000_000_i64
+                when "m"     then 60_000_000_000_i64
+                when "h"     then 3_600_000_000_000_i64
+                when "d"     then 86_400_000_000_000_i64
+                else
+                  raise ArgumentError.new("unknown time unit #{m[4].inspect} (use ms, s, m, h, d)")
+                end
+      whole, _, frac = m[2].partition('.')
+      # An exponent, or more digits than the integer arithmetic below holds,
+      # goes through a float; anything else is exact to the nanosecond, so
+      # that a dumped span (see `render`) reloads as the same span.
+      if m[3]? || whole.size > 19
+        return ("#{m[1]}#{m[2]}#{m[3]?}".to_f * unit_ns).nanoseconds
       end
+      frac = frac[0, 18]
+      scale = 10_i128 ** frac.size
+      ns = (whole.empty? ? 0_i128 : whole.to_i128) * unit_ns
+      ns += (frac.to_i128 * unit_ns + scale // 2) // scale unless frac.empty?
+      ns = -ns if m[1] == "-"
+      Time::Span.new(seconds: ns.tdiv(1_000_000_000).to_i64, nanoseconds: ns.remainder(1_000_000_000).to_i32)
     end
 
     private def render(v : T) : String
       {% if T == Time::Span %}
-        normalize(v.total_seconds).to_s
+        # Seconds as an exact decimal, from the span's integer parts rather
+        # than `total_seconds` (a `Float64`, which drops nanoseconds from a
+        # long span and overflows on reload at `Time::Span::MAX`); no
+        # fraction for whole seconds, so `1.second` dumps as `1`.
+        secs = v.to_i.to_i128
+        nanos = v.nanoseconds
+        String.build do |io|
+          io << '-' if secs < 0 || nanos < 0
+          io << secs.abs
+          if nanos != 0
+            io << '.' << nanos.abs.to_s.rjust(9, '0').rstrip('0')
+          end
+        end
       {% else %}
         v.to_s
       {% end %}
-    end
-
-    # Render a seconds value without a needless trailing ".0" for whole numbers
-    # (so `1.second` dumps as `1`, not `1.0`). A value outside `Int64`'s range
-    # (e.g. `Time::Span::MAX`, whose `total_seconds` rounds up to 2**63) or
-    # non-finite is left as `Float64`, since `to_i64` would raise `OverflowError`.
-    # `2**63` is the exact threshold because `Int64::MAX.to_f` rounds up to it.
-    private def normalize(seconds : Float64)
-      if seconds.finite? && seconds.abs < 9223372036854775808.0 && seconds == seconds.to_i64
-        seconds.to_i64
-      else
-        seconds
-      end
     end
   end
 
@@ -428,6 +518,16 @@ module Superconf
     # Assign through to the target option (same precedence rules apply).
     def set(value : T, source : Source = Source::Runtime, origin : String = "API") : Nil
       @target.set value, source, origin
+    end
+
+    # :nodoc:
+    def try_set(value, source : Source, origin : String) : Bool
+      @target.try_set value, source, origin
+    end
+
+    # :nodoc:
+    def try_set_default(value) : Bool
+      @target.try_set_default value
     end
 
     # Resets the shared value (see `Option#reset`).

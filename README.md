@@ -52,6 +52,12 @@ covers `Bool`, every primitive integer and float type (`Int32`, `UInt16`,
 runtime). `get(key, T)` / `set(key, v)` are the dynamic, string-keyed API used
 by the loaders.
 
+A config file's values reach their options as the text the file wrote, so a
+String option takes `version: 1.10` as `"1.10"` and an enum takes `mode: off`
+without quotes; a null (`key: ~`) leaves the option unset. On the command line
+a bool is `--flag` / `--no-flag` or `--flag=VALUE`, and everything from a `--`
+on is left for the application.
+
 ## Overriding and aliasing lower-level options
 
 A library registers an option; the app on top can adjust it without touching the
