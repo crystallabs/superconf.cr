@@ -130,6 +130,15 @@ module Superconf
     # Puts the option back to its registered default (see `Superconf.reset`).
     abstract def reset : Nil
 
+    # :nodoc:
+    #
+    # Sets *value* (as `Option#set`; with *as_default*, also as the recorded
+    # default) when it is of the option's value type, or a member of it for
+    # a union type such as `String?`, and returns whether it was. Backs the
+    # string-keyed `Superconf.set`/`.set_default`, whose value type is the
+    # argument's static type.
+    abstract def set_compatible(value, source : Source, origin : String, *, as_default : Bool = false) : Bool
+
     # Key with its leading `<group>.` stripped, for grouped dumps. A key
     # without a dot is returned unchanged.
     def leaf_key : String
@@ -206,6 +215,13 @@ module Superconf
     # `Superconf.reset`).
     def reset : Nil
       assign @default, Source::Default, "default"
+    end
+
+    def set_compatible(value, source : Source, origin : String, *, as_default : Bool = false) : Bool
+      return false unless value.is_a?(T)
+      set value, source, origin
+      self.default = value if as_default
+      true
     end
 
     # Records *value* as coming from *source*, and tells the `on_change`
@@ -433,6 +449,10 @@ module Superconf
     # Resets the shared value (see `Option#reset`).
     def reset : Nil
       @target.reset
+    end
+
+    def set_compatible(value, source : Source, origin : String, *, as_default : Bool = false) : Bool
+      @target.set_compatible value, source, origin, as_default: as_default
     end
 
     # Watches the shared value: the block is registered on the target, so a

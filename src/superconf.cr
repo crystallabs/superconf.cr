@@ -242,7 +242,15 @@ module Superconf
   # Dynamic, string-keyed write at `Source::Runtime` (always wins). Raises on
   # type mismatch. Prefer `Superconf.<name> = ...` in normal code.
   def self.set(key : String, value : T, source : Source = Source::Runtime, origin : String = "API") : Nil forall T
-    typed(key, T).set(value, source, origin)
+    set_typed key, value, source, origin
+  end
+
+  # Shared core of `set`/`set_default`: *value* may be of the option's value
+  # type or a member of it (a `String` for a `String?` option).
+  private def self.set_typed(key : String, value : T, source : Source, origin : String, *, as_default : Bool = false) : Nil forall T
+    opt = resolve self[key]
+    return if opt.set_compatible(value, source, origin, as_default: as_default)
+    raise Error.new("config option #{key.inspect} is #{opt.class}, not Option(#{T})")
   end
 
   # Puts option *key* back to its registered default, at `Source::Default`
@@ -276,11 +284,9 @@ module Superconf
   # effective value is left untouched; only the recorded default changes. Call
   # it early (before `configure!`/`load_*`).
   def self.set_default(key : String, value : T) : Nil forall T
-    opt = typed(key, T)
-    # Validate first; record the new default only after it succeeds, so a value
-    # that fails the validator doesn't leave an invalid default behind.
-    opt.set value, Source::Default, "default (set by app)"
-    opt.default = value
+    # Validates first; records the new default only after it succeeds, so a
+    # value that fails the validator doesn't leave an invalid default behind.
+    set_typed key, value, Source::Default, "default (set by app)", as_default: true
   end
 
   # Register an *alias*: a second name (*alias_key*) for an already-registered
